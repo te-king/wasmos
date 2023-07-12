@@ -1,0 +1,8 @@
+[package]
+name = "wshell"
+description = "A simple shell written in Rust for the wasmos kernel."
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wlib = { path = "../wlib" }

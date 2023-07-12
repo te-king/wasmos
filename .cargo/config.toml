@@ -1,0 +1,5 @@
+[unstable]
+bindeps = true
+
+[target.x86_64-unknown-uefi]
+runner = "bootuefi"
