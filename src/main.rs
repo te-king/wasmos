@@ -1,4 +1,4 @@
-#![feature(alloc_error_handler)]
+#![feature(alloc_error_handler, abi_x86_interrupt, lazy_cell)]
 #![no_main]
 #![no_std]
 

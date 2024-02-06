@@ -7,17 +7,32 @@ use uefi::{
 
 use crate::{kernel_main, log};
 
+use self::int::install_interrupt_table;
+
+mod int;
 mod io;
 mod mem;
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    use x86_64::instructions::hlt;
+
+    use crate::logln;
+
+    logln!("Kernel panic at: {:?}", info);
+
+    loop {
+        hlt()
+    }
 }
 
 #[entry]
-fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
+fn main(handle: Handle, system_table: SystemTable<Boot>) -> Status {
+    unsafe {
+        install_interrupt_table();
+    }
+
     let (_system_table, memory_map) =
         system_table.exit_boot_services(MemoryType::RUNTIME_SERVICES_DATA);
 
@@ -26,6 +41,8 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         mem::install_memory_map(memory_map);
     }
 
-    kernel_main();
-    Status::SUCCESS
+    match kernel_main() {
+        Ok(_) => Status::SUCCESS,
+        Err(_) => Status::UNSUPPORTED,
+    }
 }

@@ -25,6 +25,8 @@ wshell = { path = "crates/wshell", artifact = "bin", target = "wasm32-unknown-un
 
 [package.metadata.bootuefi]
 run-args = [
+    "-smp",
+    "4",
     "-serial",
     "stdio",
     "-nographic",
@@ -32,6 +34,8 @@ run-args = [
     "isa-debug-exit,iobase=0xf4,iosize=0x04",
 ]
 test-args = [
+    "-smp",
+    "4",
     "-serial",
     "stdio",
     "-nographic",
