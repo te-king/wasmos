@@ -295,6 +295,7 @@ dependencies = [
  "uart_16550",
  "uefi",
  "wasmi",
+ "woke",
  "wshell",
  "x86_64",
 ]
@@ -311,6 +312,12 @@ dependencies = [
 [[package]]
 name = "wlib"
 version = "0.1.0"
+
+[[package]]
+name = "woke"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84a0acf95762131790eb4f458d5b9c8ae90dc521f8c5901906203764b261b0b"
 
 [[package]]
 name = "wshell"

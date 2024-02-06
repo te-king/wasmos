@@ -9,6 +9,7 @@ use wasmi::{Caller, Engine, Func, Linker, Module, Store};
 #[path = "arch/x86_64/mod.rs"]
 mod arch;
 
+mod exec;
 mod log;
 mod qemu;
 
@@ -16,8 +17,7 @@ const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
 pub fn kernel_main() -> Result<(), ()> {
     let engine = Engine::default();
-    let mut linker = <Linker<()>>::new(&engine);
-
+    let mut linker = Linker::<()>::new(&engine);
     let mut store = Store::<()>::new(&engine, ());
 
     let wasmos_print = Func::wrap(
@@ -43,18 +43,6 @@ pub fn kernel_main() -> Result<(), ()> {
     });
 
     linker.define("host", "hello", host_hello).unwrap();
-    // let instance = linker
-    //     .instantiate(&mut store, &module)
-    //     .unwrap()
-    //     .start(&mut store)
-    //     .unwrap();
-    // let hello = host_hello.typed::<(i32), ()>(&mut store)?;
-
-    // let instance = linker
-    // .instantiate(&mut store, &module)?
-    // .start(&mut store)
-    // .unwrap();
-    // let hello = instance.get_typed_func::<(), ()>(&store, "hello").unwrap();
 
     // ceate an instance
     let module = Module::new(&engine, WSHELL).unwrap();

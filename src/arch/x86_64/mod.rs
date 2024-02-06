@@ -26,8 +26,6 @@ fn main(_handle: Handle, system_table: SystemTable<Boot>) -> Status {
         mem::install_memory_map(memory_map);
     }
 
-    match kernel_main() {
-        Ok(_) => Status::SUCCESS,
-        Err(_) => Status::ABORTED,
-    }
+    kernel_main();
+    Status::SUCCESS
 }
