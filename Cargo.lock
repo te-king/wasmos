@@ -54,12 +54,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 
 [[package]]
-name = "intx"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6f38a50a899dc47a6d0ed5508e7f601a2e34c3a85303514b5d137f3c10a0c75"
-
-[[package]]
 name = "libm"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -205,9 +199,9 @@ dependencies = [
 
 [[package]]
 name = "uefi"
-version = "0.24.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b63e82686b4bdb0db74f18b2abbd60a0470354fb640aa69e115598d714d0a10"
+checksum = "07ead9f748a4646479b850add36b527113a80e80a7e0f44d7b0334291850dcc5"
 dependencies = [
  "bitflags 2.3.3",
  "log",
@@ -220,9 +214,9 @@ dependencies = [
 
 [[package]]
 name = "uefi-macros"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023d94ef8e135d068b9a3bd94614ef2610b2b0419ade0a9d8f3501fa9cd08e95"
+checksum = "26a7b1c2c808c3db854a54d5215e3f7e7aaf5dcfbce095598cba6af29895695d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -231,9 +225,9 @@ dependencies = [
 
 [[package]]
 name = "uefi-raw"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62642516099c6441a5f41b0da8486d5fc3515a0603b0fdaea67b31600e22082e"
+checksum = "864ac69eadd877bfb34e7814be1928122ed0057d9f975169a56ee496aa7bdfd7"
 dependencies = [
  "bitflags 2.3.3",
  "ptr_meta",
@@ -242,9 +236,9 @@ dependencies = [
 
 [[package]]
 name = "uefi-services"
-version = "0.21.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44b32954ebbb4be5ebfde0df6699c2091f04e9f9c3762c65f3435dfb1a90a668"
+checksum = "a79fcb420624743c895bad0f9480fbc2f64e7c8d8611fb1ada6bdd799942feb4"
 dependencies = [
  "cfg-if",
  "log",
@@ -253,9 +247,9 @@ dependencies = [
 
 [[package]]
 name = "uguid"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "594cc87e268a7b43d625d46c63cf1605d0e61bf66e4b1cd58c058ec0191e1f81"
+checksum = "ab14ea9660d240e7865ce9d54ecdbd1cd9fa5802ae6f4512f093c7907e921533"
 
 [[package]]
 name = "unicode-ident"
@@ -271,11 +265,10 @@ checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
 name = "wasmi"
-version = "0.30.0"
+version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e51fb5c61993e71158abf5bb863df2674ca3ec39ed6471c64f07aeaf751d67b4"
+checksum = "77a8281d1d660cdf54c76a3efa9ddd0c270cada1383a995db3ccb43d166456c7"
 dependencies = [
- "intx",
  "smallvec",
  "spin",
  "wasmi_arena",
@@ -285,15 +278,15 @@ dependencies = [
 
 [[package]]
 name = "wasmi_arena"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "401c1f35e413fac1846d4843745589d9ec678977ab35a384db8ae7830525d468"
+checksum = "104a7f73be44570cac297b3035d76b169d6599637631cf37a1703326a0727073"
 
 [[package]]
 name = "wasmi_core"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624e6333e861ef49095d2d678b76ebf30b06bf37effca845be7e5b87c90071b7"
+checksum = "dcf1a7db34bff95b85c261002720c00c3a6168256dcb93041d3fa2054d19856a"
 dependencies = [
  "downcast-rs",
  "libm",
@@ -336,12 +329,12 @@ dependencies = [
 
 [[package]]
 name = "x86_64"
-version = "0.14.10"
+version = "0.14.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "100555a863c0092238c2e0e814c1096c1e5cf066a309c696a87e907b5f8c5d69"
+checksum = "3b835097a84e4457323331ec5d6eb23d096066cbfb215d54096dcb4b2e85f500"
 dependencies = [
  "bit_field",
- "bitflags 1.3.2",
+ "bitflags 2.3.3",
  "rustversion",
  "volatile",
 ]

@@ -4,8 +4,6 @@
 
 extern crate alloc;
 
-use core::{future::Future, pin::Pin};
-
 use uefi::prelude::*;
 use uefi_services::println;
 use wasmi::{Caller, Engine, Func, Linker, Module, Store};
@@ -76,15 +74,4 @@ fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     qemu::exit_qemu(qemu::QemuExitCode::Success);
     Status::SUCCESS
-}
-
-/// A task that will be preempted after a certain amount of time,
-/// if it is not completed before then.
-/// Execution will execute within a different stack frame.
-struct PreemptiveTask;
-
-impl Future<Output = ()> for PreemptableTask {
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        Poll::Ready(())
-    }
 }
