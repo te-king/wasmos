@@ -4,22 +4,17 @@
 
 extern crate alloc;
 
-use uefi::prelude::*;
-use uefi_services::println;
 use wasmi::{Caller, Engine, Func, Linker, Module, Store};
 
+#[path = "arch/x86_64/mod.rs"]
+mod arch;
+
+mod log;
 mod qemu;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
-#[entry]
-fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
-    // retrieve memory map, exit boot services, and add to allocator
-    // let (mut system_table, memory_map) = system_table //
-    // .exit_boot_services();
-
-    uefi_services::init(&mut system_table).unwrap();
-
+pub fn kernel_main() -> Result<(), ()> {
     let engine = Engine::default();
     let mut linker = <Linker<()>>::new(&engine);
 
@@ -37,14 +32,14 @@ fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             let mut buffer = alloc::vec![0u8; length as usize];
             memory.read(caller, offset as usize, &mut buffer);
             let s = core::str::from_utf8(&buffer).unwrap();
-            println!("{}", s);
+            logln!("{}", s);
         },
     );
 
     linker.define("host", "wasmos_print", wasmos_print);
 
     let host_hello = Func::wrap(&mut store, |parameter: i32| {
-        println!("Got {parameter} from WebAssembly");
+        logln!("Got {} from WebAssembly", parameter);
     });
 
     linker.define("host", "hello", host_hello).unwrap();
@@ -73,5 +68,5 @@ fn main(_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     hello.call(&mut store, ()).unwrap();
 
     qemu::exit_qemu(qemu::QemuExitCode::Success);
-    Status::SUCCESS
+    Ok(())
 }
