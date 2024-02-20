@@ -1,0 +1,22 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmi = { version = "0.31.2", default-features = false }
+uefi = "0.26.0"
+talc = "4.2.0"
+spin = "0.9.8"
+woke = "0.0.4"
+crossbeam-queue = { version = "0.2.1", default-features = false, features = [
+    "alloc",
+] }
+
+# x86_64 stuff
+x2apic = "0.4.3"
+uart_16550 = "0.3"
+x86_64 = "0.14.11"
+
+# os applications
+wshell = { path = "../wshell", artifact = "bin", target = "wasm32-unknown-unknown" }

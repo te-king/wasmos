@@ -5,41 +5,12 @@ edition = "2021"
 
 [workspace]
 resolver = "2"
-members = ["crates/wlib", "crates/wshell"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+members = ["crates/kernel", "crates/wlib", "crates/wshell"]
 
 [dependencies]
-uefi = { version = "0.26.0" }
-wasmi = { version = "0.31.2", default-features = false }
-talc = "4.2.0"
-spin = "0.9.8"
-woke = "0.0.4"
+ovmf-prebuilt = { git = "https://github.com/rust-osdev/ovmf-prebuilt.git", branch = "release" }
+tempdir = "0.3"
+anyhow = "1"
 
-# x86_64 stuff
-uart_16550 = "0.3"
-x86_64 = "0.14.11"
-
-# os applications
-wshell = { path = "crates/wshell", artifact = "bin", target = "wasm32-unknown-unknown" }
-
-[package.metadata.bootuefi]
-run-args = [
-    "-smp",
-    "4",
-    "-serial",
-    "stdio",
-    "-nographic",
-    "-device",
-    "isa-debug-exit,iobase=0xf4,iosize=0x04",
-]
-test-args = [
-    "-smp",
-    "4",
-    "-serial",
-    "stdio",
-    "-nographic",
-    "-device",
-    "isa-debug-exit,iobase=0xf4,iosize=0x04",
-]
-test-success-exit-code = 33
+[build-dependencies]
+kernel = { path = "crates/kernel", artifact = "bin", target = "x86_64-unknown-uefi" }

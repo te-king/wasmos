@@ -1,60 +1,31 @@
-#![feature(alloc_error_handler, abi_x86_interrupt, lazy_cell)]
-#![no_main]
-#![no_std]
+use anyhow::Result;
+use tempdir::TempDir;
 
-extern crate alloc;
+fn main() -> Result<()> {
+    let kernel = std::env!("KERNEL_PATH");
 
-use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+    // Create a temporary directory to store the EFI boot files
+    let dir = TempDir::new("kernel")?;
 
-#[path = "arch/x86_64/mod.rs"]
-mod arch;
+    // Create the EFI boot directory
+    let efi_boot = dir.path().join("EFI").join("BOOT");
+    std::fs::create_dir_all(&efi_boot)?;
 
-mod exec;
-mod log;
-mod qemu;
+    // Copy the kernel to the EFI boot directory
+    std::fs::copy(&kernel, efi_boot.join("BOOTX64.EFI")).unwrap();
 
-const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
+    let mut cmd = std::process::Command::new("qemu-system-x86_64");
+    cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
+    cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
+    cmd.arg("-bios").arg(ovmf_prebuilt::ovmf_pure_efi());
+    cmd.args([
+        "-drive",
+        &format!("format=raw,file=fat:rw:{}", dir.path().display()),
+    ]);
+    let _ = cmd.spawn()?.wait()?;
 
-pub fn kernel_main() -> Result<(), ()> {
-    let engine = Engine::default();
-    let mut linker = Linker::<()>::new(&engine);
-    let mut store = Store::<()>::new(&engine, ());
+    // Clean up the temporary directory
+    dir.close()?;
 
-    let wasmos_print = Func::wrap(
-        &mut store,
-        |caller: Caller<'_, _>, offset: u32, length: u32| {
-            let memory = caller
-                .get_export("memory")
-                .expect("'memory' export should exist")
-                .into_memory()
-                .expect("'memory' should be a memory");
-
-            let mut buffer = alloc::vec![0u8; length as usize];
-            memory.read(caller, offset as usize, &mut buffer);
-            let s = core::str::from_utf8(&buffer).unwrap();
-            logln!("{}", s);
-        },
-    );
-
-    linker.define("host", "wasmos_print", wasmos_print);
-
-    let host_hello = Func::wrap(&mut store, |parameter: i32| {
-        logln!("Got {} from WebAssembly", parameter);
-    });
-
-    linker.define("host", "hello", host_hello).unwrap();
-
-    // ceate an instance
-    let module = Module::new(&engine, WSHELL).unwrap();
-    let instance = linker
-        .instantiate(&mut store, &module)
-        .unwrap()
-        .start(&mut store)
-        .unwrap();
-
-    let hello = instance.get_typed_func::<(), ()>(&store, "main").unwrap();
-    hello.call(&mut store, ()).unwrap();
-
-    qemu::exit_qemu(qemu::QemuExitCode::Success);
     Ok(())
 }

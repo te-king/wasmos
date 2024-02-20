@@ -1,8 +1,4 @@
 [unstable]
+# enable the unstable artifact-dependencies feature, see
+# https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#artifact-dependencies
 bindeps = true
-
-[build]
-target = "x86_64-unknown-uefi"
-
-[target.x86_64-unknown-uefi]
-runner = "bootuefi"
