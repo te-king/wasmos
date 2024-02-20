@@ -7,23 +7,12 @@ use uefi::{
 use x2apic::lapic::xapic_base;
 use x86_64::instructions::interrupts::enable_and_hlt;
 
-use crate::{kernel_main, log, logln};
+use crate::{kernel_main, log};
 
 mod int;
 mod io;
 mod mem;
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    use crate::logln;
-    use x86_64::instructions::hlt;
-
-    logln!("Kernel panic at: {:?}", info);
-    loop {
-        hlt()
-    }
-}
+mod panic;
 
 #[entry]
 fn main(handle: Handle, system_table: SystemTable<Boot>) -> Status {

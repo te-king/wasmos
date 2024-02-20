@@ -14,7 +14,8 @@ static ALLOCATOR: Talck<spin::Mutex<()>, ErrOnOom> = Talc::new(ErrOnOom).lock();
 pub unsafe fn install_memory_map(memory_map: MemoryMap) {
     let conventional = memory_map
         .entries()
-        .filter(|m| m.ty == MemoryType::CONVENTIONAL);
+        .filter(|m| m.ty == MemoryType::CONVENTIONAL)
+        .filter(|m| m.phys_start != 0);
 
     for region in conventional {
         let start = region.phys_start as usize;
