@@ -68,14 +68,12 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn breakpoint_handler(
-    //
     stack_frame: InterruptStackFrame,
 ) {
     logln!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn timer_handler(
-    //
     _stack_frame: InterruptStackFrame,
 ) {
     crate::timer::tick();
@@ -83,7 +81,6 @@ extern "x86-interrupt" fn timer_handler(
 }
 
 extern "x86-interrupt" fn error_handler(
-    //
     stack_frame: InterruptStackFrame,
 ) {
     logln!("ERROR:\n{:#?}", stack_frame);
@@ -91,7 +88,6 @@ extern "x86-interrupt" fn error_handler(
 }
 
 extern "x86-interrupt" fn spurious_handler(
-    //
     stack_frame: InterruptStackFrame,
 ) {
     // No end-of-interrupt: a spurious interrupt isn't marked in service, so

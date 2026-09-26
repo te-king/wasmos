@@ -53,7 +53,6 @@ pub fn kernel_main() -> Result<(), ()> {
 
     linker.define("host", "hello", host_hello).unwrap();
 
-    // ceate an instance
     let module = Module::new(&engine, WSHELL).unwrap();
     let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
 
