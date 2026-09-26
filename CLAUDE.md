@@ -29,7 +29,7 @@ cargo clippy -p wasmos -- -D warnings
 
 ### Testing
 
-There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. Tasks spawned in `kernel_main` (e.g. `tick_task`) act as boot-time smoke tests.
+There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. The futures `kernel_main` joins (e.g. `tick_task`) act as boot-time smoke tests.
 
 To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::wasmos_print` from wshell to test guest traps.
 
@@ -51,7 +51,7 @@ The order is load-bearing:
 3. Serial port, then the memory map is added to the allocator.
 4. `cpu::init(0, ...)`, which needs the heap.
 5. IDT, mask the legacy PIC, enable the LAPIC (this starts its timer), enable interrupts.
-6. `kernel_main`.
+6. `executor::block_on(kernel_main())`. The entry point turns its `Result` into the QEMU exit code: this is the only place the kernel decides success or failure.
 
 Consequences:
 - Before `exit_boot_services`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
@@ -66,7 +66,9 @@ Consequences:
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
 - `timer::ticks()` is a single-consumer `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). Fan-out to many waiters belongs in a task that owns the stream.
-- `sync::executor::SimpleExecutor` currently busy-polls with a no-op waker.
+- `executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
+- Its waker only sets a static flag, so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
+- A wake from another processor won't interrupt a halted one. Once other processors run tasks, that needs an IPI.
 
 ### Dependency notes
 - `wasmi` is built with `default-features = false`. Keep `validate` (otherwise guest modules aren't validated) and `auto-dispatch` (otherwise unoptimised builds use tail-call dispatch that grows the kernel stack on every wasm instruction).
