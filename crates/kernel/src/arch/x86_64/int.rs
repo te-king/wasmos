@@ -1,6 +1,9 @@
 use spin::LazyLock;
 use x2apic::lapic::{xapic_base, LocalApic, LocalApicBuilder};
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::{
+    instructions::port::Port,
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
+};
 
 use super::cpu;
 use crate::logln;
@@ -25,9 +28,16 @@ pub unsafe fn local_apic() -> LocalApic {
         .unwrap()
 }
 
-///
+/// Enables the current processor's local APIC, which also starts its timer.
 pub unsafe fn install_local_apic() {
-    // cpu::with(|cpu| cpu.lapic.borrow_mut().enable());
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().enable() });
+}
+
+/// Masks every line of the legacy 8259 PICs, which the firmware may have
+/// left enabled, so that only the local APIC delivers interrupts.
+pub unsafe fn disable_legacy_pic() {
+    Port::<u8>::new(0x21).write(0xFF);
+    Port::<u8>::new(0xA1).write(0xFF);
 }
 
 /// The interrupt table defines a set of functions that get called when
@@ -66,9 +76,9 @@ extern "x86-interrupt" fn breakpoint_handler(
 
 extern "x86-interrupt" fn timer_handler(
     //
-    stack_frame: InterruptStackFrame,
+    _stack_frame: InterruptStackFrame,
 ) {
-    logln!("TIMER:\n{:#?}", stack_frame);
+    crate::timer::tick();
     cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
 
@@ -84,6 +94,7 @@ extern "x86-interrupt" fn spurious_handler(
     //
     stack_frame: InterruptStackFrame,
 ) {
+    // No end-of-interrupt: a spurious interrupt isn't marked in service, so
+    // an EOI here would retire some other interrupt instead.
     logln!("SPURIOUS:\n{:#?}", stack_frame);
-    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }

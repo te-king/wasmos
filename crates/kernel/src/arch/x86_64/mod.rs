@@ -1,5 +1,6 @@
 use uart_16550::{Config, Uart16550Tty};
 use uefi::{boot, entry, mem::memory_map::MemoryType, Status};
+use x86_64::instructions::interrupts;
 
 use crate::{kernel_main, log, logln, qemu};
 
@@ -25,8 +26,10 @@ fn main() -> Status {
         mem::install_memory_map(memory_map);
         cpu::init(0, int::local_apic());
         int::install_interrupt_table();
+        int::disable_legacy_pic();
         int::install_local_apic();
     }
+    interrupts::enable();
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match processors {
         Ok(processors) => processors.log(),

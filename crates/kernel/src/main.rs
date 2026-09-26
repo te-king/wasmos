@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+use alloc::vec::Vec;
+
+use futures_util::StreamExt;
 use sync::{executor::SimpleExecutor, task::Task};
 use wasmi::{Caller, Engine, Error, Func, Linker, Module, Store, TrapCode};
 
@@ -13,6 +16,7 @@ mod arch;
 mod log;
 mod qemu;
 mod sync;
+mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
@@ -58,6 +62,7 @@ pub fn kernel_main() -> Result<(), ()> {
 
     let mut executor = SimpleExecutor::new();
     executor.spawn(Task::new(example_task()));
+    executor.spawn(Task::new(tick_task()));
     executor.run();
 
     qemu::exit_qemu(qemu::QemuExitCode::Success);
@@ -71,4 +76,10 @@ async fn async_number() -> u32 {
 async fn example_task() {
     let number = async_number().await;
     logln!("async number: {}", number);
+}
+
+async fn tick_task() {
+    let ticks = timer::ticks().expect("nothing else is using the timer");
+    let seen: Vec<u64> = ticks.take(3).collect().await;
+    logln!("timer: ticks {:?}", seen);
 }
