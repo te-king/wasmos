@@ -7,12 +7,13 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use futures_util::{future::join, StreamExt};
-use wasmi::{Caller, Engine, Error, Func, Linker, Module, Store, TrapCode};
+use wasmi::{Engine, Error, Module, Store};
 
 #[path = "arch/x86_64/mod.rs"]
 mod arch;
 
 mod executor;
+mod host;
 mod log;
 mod qemu;
 mod timer;
@@ -20,46 +21,20 @@ mod timer;
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
 pub async fn kernel_main() -> Result<(), Error> {
-    let engine = Engine::default();
-    let mut linker = Linker::<()>::new(&engine);
-    let mut store = Store::<()>::new(&engine, ());
-
-    let wasmos_print = Func::wrap(
-        &mut store,
-        |caller: Caller<'_, _>, offset: u32, length: u32| -> Result<(), Error> {
-            // Bad input from the guest traps the guest rather than panicking the kernel.
-            let memory = caller
-                .get_export("memory")
-                .and_then(|export| export.into_memory())
-                .ok_or_else(|| Error::new("wasmos_print: guest has no 'memory' export"))?;
-
-            let mut buffer = alloc::vec![0u8; length as usize];
-            memory
-                .read(caller, offset as usize, &mut buffer)
-                .map_err(|_| TrapCode::MemoryOutOfBounds)?;
-            let s = core::str::from_utf8(&buffer)
-                .map_err(|_| Error::new("wasmos_print: string is not valid UTF-8"))?;
-            log!("{}", s);
-            Ok(())
-        },
-    );
-
-    linker.define("host", "wasmos_print", wasmos_print)?;
-
-    let host_hello = Func::wrap(&mut store, |parameter: i32| {
-        logln!("Got {} from WebAssembly", parameter);
-    });
-
-    linker.define("host", "hello", host_hello)?;
-
-    let module = Module::new(&engine, WSHELL)?;
-    let instance = linker.instantiate_and_start(&mut store, &module)?;
-
-    let hello = instance.get_typed_func::<(), ()>(&store, "main")?;
-    hello.call(&mut store, ())?;
-
+    run_guest(WSHELL)?;
     join(example_task(), tick_task()).await;
     Ok(())
+}
+
+/// Instantiates a guest module and runs its entry point to completion.
+fn run_guest(wasm: &[u8]) -> Result<(), Error> {
+    let engine = Engine::default();
+    let mut store = Store::new(&engine, ());
+    let module = Module::new(&engine, wasm)?;
+    let instance = host::linker(&engine)?.instantiate_and_start(&mut store, &module)?;
+    instance
+        .get_typed_func::<(), ()>(&store, wasmos_abi::ENTRY)?
+        .call(&mut store, ())
 }
 
 async fn async_number() -> u32 {

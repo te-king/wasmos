@@ -24,14 +24,14 @@ cargo fmt --all
 cargo fmt --all --check
 cargo clippy -p kernel --target x86_64-unknown-uefi -- -D warnings
 cargo clippy -p wlib -p wshell --target wasm32-unknown-unknown -- -D warnings
-cargo clippy -p wasmos -- -D warnings
+cargo clippy -p wasmos -p wasmos-abi -- -D warnings
 ```
 
 ### Testing
 
 There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. The futures `kernel_main` joins (e.g. `tick_task`) act as boot-time smoke tests.
 
-To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::wasmos_print` from wshell to test guest traps.
+To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::sys::wasmos_print` from wshell to test guest traps.
 
 The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `target/ovmf` on first run, so `cargo clean` forces a re-download.
 
@@ -40,22 +40,27 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 ### Workspace and build pipeline
 - The root package (`src/main.rs`, `build.rs`) is the **host runner**, not the kernel. `build.rs` receives the kernel's `.efi` path through a cargo artifact dependency (`bindeps`, enabled in `.cargo/config.toml`). The runner copies it to `EFI/BOOT/BOOTX64.EFI` on a temporary FAT drive and boots QEMU with `-smp 4` and OVMF as read-only pflash.
 - `crates/kernel` is the UEFI kernel (`x86_64-unknown-uefi`, `no_std`). It depends on `crates/wshell` as a `wasm32-unknown-unknown` artifact and embeds it with `include_bytes!`.
-- `crates/wshell` is the first guest program. `crates/wlib` is the guest-side standard library: it declares the host imports (wasm import module `"host"`) and the `print!`/`println!` macros.
-- **Guest ABI:** host functions are defined in `kernel_main` (`crates/kernel/src/main.rs`) and declared by name in `wlib`. The names and signatures must match on both sides. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
+- `crates/wshell` is the first guest program. `crates/wlib` is the guest-side standard library: raw host imports in `wlib::sys`, safe wrappers (`wlib::print`) and the `print!`/`println!` macros.
+- **Guest ABI:** `crates/abi` (`wasmos-abi`) holds the import module name, host function names and guest entry point as constants. The kernel defines host functions in `crates/kernel/src/host.rs` using them. `wlib` must use string literals in its import attributes, so it checks them against the constants with compile-time `assert!`s: renaming one side without the other fails the build. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
 - `x86_64-unknown-uefi` is a Windows-style (COFF) target: `#[thread_local]` fails to link (`_tls_index`), which is why per-CPU data uses the GS base instead.
 
-### Boot sequence (`crates/kernel/src/arch/x86_64/mod.rs`)
-The order is load-bearing:
-1. `smp::discover()` while boot services exist (UEFI MP Services).
-2. `exit_boot_services`.
-3. Serial port, then the memory map is added to the allocator.
-4. `cpu::init(0, ...)`, which needs the heap.
-5. IDT, mask the legacy PIC, enable the LAPIC (this starts its timer), enable interrupts.
-6. `executor::block_on(kernel_main())`. The entry point turns its `Result` into the QEMU exit code: this is the only place the kernel decides success or failure.
+### Boot sequence (`crates/kernel/src/arch/x86_64/boot.rs`, `mod.rs`)
+The order is load-bearing, so it is enforced with typestates. Each stage is a zero-sized token that only the previous stage can produce, and each transition consumes it:
 
-Consequences:
-- Before `exit_boot_services`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
-- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. That is why `init` runs before the IDT is loaded.
+```rust
+let firmware = unsafe { boot::BootServices::start() };
+let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
+let _interrupts = firmware
+    .exit()               // exit boot services, serial log, memory map -> allocator
+    .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
+    .enable_interrupts(); // IDT, mask legacy PIC, enable LAPIC (starts the timer), sti
+report(executor::block_on(kernel_main()))
+```
+
+- Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
+- `report` turns `kernel_main`'s `Result` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
+- Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
+- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it for boot code (the IDT is only loaded after `init_cpu`). Application processors will need the same guarantee.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).

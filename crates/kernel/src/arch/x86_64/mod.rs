@@ -1,9 +1,10 @@
-use uart_16550::{Config, Uart16550Tty};
-use uefi::{boot, entry, mem::memory_map::MemoryType, Status};
-use x86_64::instructions::interrupts;
+use core::fmt::Display;
 
-use crate::{executor, kernel_main, log, logln, qemu};
+use uefi::{entry, Status};
 
+use crate::{executor, kernel_main, logln, qemu};
+
+mod boot;
 mod cpu;
 mod int;
 mod io;
@@ -13,30 +14,32 @@ mod smp;
 
 #[entry]
 fn main() -> Status {
-    // MP Services is a boot service, so this has to happen first.
-    let processors = smp::discover();
+    // SAFETY: This is the UEFI entry point, and nothing has used boot
+    // services yet.
+    let firmware = unsafe { boot::BootServices::start() };
+    let processors = smp::discover(&firmware);
+    let _interrupts = firmware.exit().init_cpu(0).enable_interrupts();
 
-    // SAFETY: Discovery closed the protocol it opened, and nothing else has
-    // used boot services, so no references to boot-services resources remain.
-    let memory_map = unsafe { boot::exit_boot_services(Some(MemoryType::RUNTIME_SERVICES_DATA)) };
-
-    unsafe {
-        let serial = Uart16550Tty::new_port(0x03f8, Config::default()).unwrap();
-        log::install_stdio_port(serial).unwrap();
-        mem::install_memory_map(memory_map);
-        cpu::init(0, int::local_apic());
-        int::install_interrupt_table();
-        int::disable_legacy_pic();
-        int::install_local_apic();
-    }
-    interrupts::enable();
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
-    match processors {
-        Ok(processors) => processors.log(),
-        Err(err) => logln!("smp: MP Services unavailable: {:?}", err),
+    match &processors {
+        Ok(processors) => {
+            logln!("smp: {}", processors);
+            for (id, cpu) in processors.iter().enumerate() {
+                let role = if id == 0 { " (bsp)" } else { "" };
+                logln!("smp: cpu {}{}: {}", id, role, cpu);
+            }
+        }
+        Err(err) => logln!("smp: {}", err),
     }
 
-    match executor::block_on(kernel_main()) {
+    report(executor::block_on(kernel_main()))
+}
+
+/// Reports the kernel's result, to QEMU through its debug-exit port and to
+/// the firmware as the entry point's status. This is the only place that
+/// decides whether the kernel succeeded.
+fn report(result: Result<(), impl Display>) -> Status {
+    match result {
         Ok(()) => {
             qemu::exit_qemu(qemu::QemuExitCode::Success);
             Status::SUCCESS
