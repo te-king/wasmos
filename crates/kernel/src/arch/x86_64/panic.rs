@@ -5,6 +5,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     use x86_64::instructions::hlt;
 
     logln!("Kernel panic at: {:?}", info);
+    crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
     loop {
         hlt()
     }

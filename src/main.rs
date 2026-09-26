@@ -1,5 +1,10 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tempdir::TempDir;
+
+// QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
+// what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
+const QEMU_EXIT_SUCCESS: i32 = (0x10 << 1) | 1;
+const QEMU_EXIT_FAILED: i32 = (0x11 << 1) | 1;
 
 fn main() -> Result<()> {
     let kernel = std::env!("KERNEL_PATH");
@@ -22,10 +27,15 @@ fn main() -> Result<()> {
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),
     ]);
-    let _ = cmd.spawn()?.wait()?;
+    let status = cmd.status()?;
 
     // Clean up the temporary directory
     dir.close()?;
 
-    Ok(())
+    match status.code() {
+        Some(QEMU_EXIT_SUCCESS) => Ok(()),
+        Some(QEMU_EXIT_FAILED) => bail!("kernel reported failure"),
+        Some(code) => bail!("QEMU exited unexpectedly with status {code}"),
+        None => bail!("QEMU was terminated by a signal"),
+    }
 }

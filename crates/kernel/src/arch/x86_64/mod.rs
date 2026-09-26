@@ -7,7 +7,7 @@ use uefi::{
 use x2apic::lapic::xapic_base;
 use x86_64::instructions::interrupts::enable_and_hlt;
 
-use crate::{kernel_main, log};
+use crate::{kernel_main, log, qemu};
 
 mod int;
 mod io;
@@ -28,6 +28,9 @@ fn main(handle: Handle, system_table: SystemTable<Boot>) -> Status {
 
     match kernel_main() {
         Ok(_) => Status::SUCCESS,
-        Err(_) => Status::UNSUPPORTED,
+        Err(_) => {
+            qemu::exit_qemu(qemu::QemuExitCode::Failed);
+            Status::UNSUPPORTED
+        }
     }
 }
