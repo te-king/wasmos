@@ -17,18 +17,19 @@ WASMOS_TIMEOUT=10 cargo run  # QEMU is killed after N seconds (default 60, 0 = n
 
 `cargo run` exits 0 only if the kernel wrote `QemuExitCode::Success` to the isa-debug-exit port. It fails if the kernel reports failure (including any panic), if QEMU exits some other way, or on timeout.
 
-Lint and format. The kernel and the wasm crates must be checked against their own targets:
+Lint and format. The kernel and the wasm crates must be checked against their own targets. CI runs all of these and fails on any warning:
 
 ```sh
 cargo fmt --all
-cargo clippy -p kernel --target x86_64-unknown-uefi
-cargo clippy -p wlib -p wshell --target wasm32-unknown-unknown
-cargo clippy -p wasmos
+cargo fmt --all --check
+cargo clippy -p kernel --target x86_64-unknown-uefi -- -D warnings
+cargo clippy -p wlib -p wshell --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p wasmos -- -D warnings
 ```
 
 ### Testing
 
-There is no unit-test harness. The test is booting: CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. Tasks spawned in `kernel_main` (e.g. `tick_task`) act as boot-time smoke tests.
+There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. Tasks spawned in `kernel_main` (e.g. `tick_task`) act as boot-time smoke tests.
 
 To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::wasmos_print` from wshell to test guest traps.
 
