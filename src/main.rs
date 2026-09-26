@@ -23,8 +23,11 @@ fn main() -> Result<()> {
     let timeout = timeout()?;
 
     // Download (and verify) the OVMF firmware on first run, then reuse the cache.
-    let ovmf = Prebuilt::fetch(Source::LATEST, concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"))
-        .context("failed to fetch OVMF firmware")?;
+    let ovmf = Prebuilt::fetch(
+        Source::LATEST,
+        concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"),
+    )
+    .context("failed to fetch OVMF firmware")?;
 
     // Create a temporary directory to store the EFI boot files
     let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
@@ -40,8 +43,10 @@ fn main() -> Result<()> {
     cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
     cmd.args(["-smp", CPUS]);
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
-    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
-    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
+    cmd.arg("-drive")
+        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
+    cmd.arg("-drive")
+        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
     cmd.args([
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),

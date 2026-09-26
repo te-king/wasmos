@@ -67,29 +67,21 @@ extern "x86-interrupt" fn double_fault_handler(
     );
 }
 
-extern "x86-interrupt" fn breakpoint_handler(
-    stack_frame: InterruptStackFrame,
-) {
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     logln!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn timer_handler(
-    _stack_frame: InterruptStackFrame,
-) {
+extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     crate::timer::tick();
     cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
 
-extern "x86-interrupt" fn error_handler(
-    stack_frame: InterruptStackFrame,
-) {
+extern "x86-interrupt" fn error_handler(stack_frame: InterruptStackFrame) {
     logln!("ERROR:\n{:#?}", stack_frame);
     cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
 
-extern "x86-interrupt" fn spurious_handler(
-    stack_frame: InterruptStackFrame,
-) {
+extern "x86-interrupt" fn spurious_handler(stack_frame: InterruptStackFrame) {
     // No end-of-interrupt: a spurious interrupt isn't marked in service, so
     // an EOI here would retire some other interrupt instead.
     logln!("SPURIOUS:\n{:#?}", stack_frame);

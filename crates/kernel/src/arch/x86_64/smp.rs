@@ -38,7 +38,12 @@ impl Processors {
     pub fn log(&self) {
         let total = self.list.len();
         let plural = if total == 1 { "" } else { "s" };
-        logln!("smp: {} processor{}, {} enabled", total, plural, self.enabled);
+        logln!(
+            "smp: {} processor{}, {} enabled",
+            total,
+            plural,
+            self.enabled
+        );
         for (index, cpu) in self.iter().enumerate() {
             logln!(
                 "smp: {}: apic {}, package {} core {} thread {}{}{}{}",
