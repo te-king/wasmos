@@ -31,9 +31,15 @@ fn main() -> Status {
     }
     interrupts::enable();
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
-    match processors {
-        Ok(processors) => processors.log(),
-        Err(err) => logln!("smp: MP Services unavailable: {:?}", err),
+    match &processors {
+        Ok(processors) => {
+            logln!("smp: {}", processors);
+            for (id, cpu) in processors.iter().enumerate() {
+                let role = if id == 0 { " (bsp)" } else { "" };
+                logln!("smp: cpu {}{}: {}", id, role, cpu);
+            }
+        }
+        Err(err) => logln!("smp: {}", err),
     }
 
     match executor::block_on(kernel_main()) {
