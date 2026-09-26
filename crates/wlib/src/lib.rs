@@ -10,7 +10,7 @@ macro_rules! print {
     ($($arg:tt)*) => {
         unsafe {
             let s = format!($($arg)*);
-            $crate::wasmos_print(s.as_ptr(), s.len());
+            $crate::wasmos_print(s.as_ptr(), s.len())
         }
     };
 }
@@ -19,9 +19,9 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     () => {
-        $crate::print!("\n");
+        $crate::print!("\n")
     };
     ($($arg:tt)*) => {
-        $crate::print!("{}\n", format_args!($($arg)*));
+        $crate::print!("{}\n", format_args!($($arg)*))
     };
 }

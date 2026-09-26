@@ -5,7 +5,10 @@
 extern crate alloc;
 
 use sync::{executor::SimpleExecutor, task::Task};
-use wasmi::{Caller, Engine, Func, Linker, Module, Store};
+use wasmi::{
+    core::{Trap, TrapCode},
+    Caller, Engine, Func, Linker, Module, Store,
+};
 
 #[path = "arch/x86_64/mod.rs"]
 mod arch;
@@ -23,21 +26,25 @@ pub fn kernel_main() -> Result<(), ()> {
 
     let wasmos_print = Func::wrap(
         &mut store,
-        |caller: Caller<'_, _>, offset: u32, length: u32| {
+        |caller: Caller<'_, _>, offset: u32, length: u32| -> Result<(), Trap> {
+            // Bad input from the guest traps the guest rather than panicking the kernel.
             let memory = caller
                 .get_export("memory")
-                .expect("'memory' export should exist")
-                .into_memory()
-                .expect("'memory' should be a memory");
+                .and_then(|export| export.into_memory())
+                .ok_or_else(|| Trap::new("wasmos_print: guest has no 'memory' export"))?;
 
             let mut buffer = alloc::vec![0u8; length as usize];
-            memory.read(caller, offset as usize, &mut buffer);
-            let s = core::str::from_utf8(&buffer).unwrap();
+            memory
+                .read(caller, offset as usize, &mut buffer)
+                .map_err(|_| TrapCode::MemoryOutOfBounds)?;
+            let s = core::str::from_utf8(&buffer)
+                .map_err(|_| Trap::new("wasmos_print: string is not valid UTF-8"))?;
             logln!("{}", s);
+            Ok(())
         },
     );
 
-    linker.define("host", "wasmos_print", wasmos_print);
+    linker.define("host", "wasmos_print", wasmos_print).unwrap();
 
     let host_hello = Func::wrap(&mut store, |parameter: i32| {
         logln!("Got {} from WebAssembly", parameter);

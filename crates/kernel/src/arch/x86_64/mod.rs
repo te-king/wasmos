@@ -4,8 +4,6 @@ use uefi::{
     table::{boot::MemoryType, Boot, SystemTable},
     Handle, Status,
 };
-use x2apic::lapic::xapic_base;
-use x86_64::instructions::interrupts::enable_and_hlt;
 
 use crate::{kernel_main, log, qemu};
 
