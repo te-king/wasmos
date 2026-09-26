@@ -1,5 +1,5 @@
 use talc::{source::Manual, TalcLock};
-use uefi::table::boot::{MemoryMap, MemoryType};
+use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 
 #[global_allocator]
 static ALLOCATOR: TalcLock<spin::Mutex<()>, Manual> = TalcLock::new(Manual);
@@ -11,7 +11,7 @@ static ALLOCATOR: TalcLock<spin::Mutex<()>, Manual> = TalcLock::new(Manual);
 /// are available for the allocator, and that the memory map is valid.
 /// This function should be called immediately after creating the memory map to reduce
 /// the chance the memory layout has changed.
-pub unsafe fn install_memory_map(memory_map: MemoryMap) {
+pub unsafe fn install_memory_map(memory_map: MemoryMapOwned) {
     let conventional = memory_map
         .entries()
         .filter(|m| m.ty == MemoryType::CONVENTIONAL)

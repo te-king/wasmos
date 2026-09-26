@@ -1,9 +1,5 @@
 use uart_16550::{Config, Uart16550Tty};
-use uefi::{
-    entry,
-    table::{boot::MemoryType, Boot, SystemTable},
-    Handle, Status,
-};
+use uefi::{boot, entry, mem::memory_map::MemoryType, Status};
 
 use crate::{kernel_main, log, qemu};
 
@@ -13,9 +9,10 @@ mod mem;
 mod panic;
 
 #[entry]
-fn main(handle: Handle, system_table: SystemTable<Boot>) -> Status {
-    let (_system_table, memory_map) =
-        system_table.exit_boot_services(MemoryType::RUNTIME_SERVICES_DATA);
+fn main() -> Status {
+    // SAFETY: Nothing has used boot services yet, so no references to
+    // boot-services resources remain.
+    let memory_map = unsafe { boot::exit_boot_services(Some(MemoryType::RUNTIME_SERVICES_DATA)) };
 
     unsafe {
         let serial = Uart16550Tty::new_port(0x03f8, Config::default()).unwrap();
