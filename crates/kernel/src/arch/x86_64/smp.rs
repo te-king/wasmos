@@ -11,6 +11,8 @@ use uefi::{
     proto::pi::mp::{MpServices, ProcessorInformation},
 };
 
+use super::boot::BootServices;
+
 /// A processor found at boot.
 #[derive(Clone, Copy, Debug)]
 pub struct Processor {
@@ -108,9 +110,9 @@ impl fmt::Display for DiscoveryError {
 
 /// Enumerates the processors through UEFI's MP Services protocol.
 ///
-/// Must be called before boot services are exited. The protocol is closed
-/// again before this returns.
-pub fn discover() -> Result<Processors, DiscoveryError> {
+/// Needs boot services, hence the token. The protocol is closed again before
+/// this returns.
+pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
     let handle = boot::get_handle_for_protocol::<MpServices>()?;
     let mp = boot::open_protocol_exclusive::<MpServices>(handle)?;
 

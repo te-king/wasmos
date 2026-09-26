@@ -44,18 +44,23 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 - **Guest ABI:** `crates/abi` (`wasmos-abi`) holds the import module name, host function names and guest entry point as constants. The kernel defines host functions in `crates/kernel/src/host.rs` using them. `wlib` must use string literals in its import attributes, so it checks them against the constants with compile-time `assert!`s: renaming one side without the other fails the build. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
 - `x86_64-unknown-uefi` is a Windows-style (COFF) target: `#[thread_local]` fails to link (`_tls_index`), which is why per-CPU data uses the GS base instead.
 
-### Boot sequence (`crates/kernel/src/arch/x86_64/mod.rs`)
-The order is load-bearing:
-1. `smp::discover()` while boot services exist (UEFI MP Services).
-2. `exit_boot_services`.
-3. Serial port, then the memory map is added to the allocator.
-4. `cpu::init(0, ...)`, which needs the heap.
-5. IDT, mask the legacy PIC, enable the LAPIC (this starts its timer), enable interrupts.
-6. `executor::block_on(kernel_main())`. The entry point turns its `Result` into the QEMU exit code: this is the only place the kernel decides success or failure.
+### Boot sequence (`crates/kernel/src/arch/x86_64/boot.rs`, `mod.rs`)
+The order is load-bearing, so it is enforced with typestates. Each stage is a zero-sized token that only the previous stage can produce, and each transition consumes it:
 
-Consequences:
-- Before `exit_boot_services`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
-- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. That is why `init` runs before the IDT is loaded.
+```rust
+let firmware = unsafe { boot::BootServices::start() };
+let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
+let _interrupts = firmware
+    .exit()               // exit boot services, serial log, memory map -> allocator
+    .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
+    .enable_interrupts(); // IDT, mask legacy PIC, enable LAPIC (starts the timer), sti
+report(executor::block_on(kernel_main()))
+```
+
+- Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
+- `report` turns `kernel_main`'s `Result` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
+- Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
+- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it for boot code (the IDT is only loaded after `init_cpu`). Application processors will need the same guarantee.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).

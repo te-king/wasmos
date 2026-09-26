@@ -18,6 +18,10 @@ enum InterruptIndex {
 /// Builds a handle to the current processor's local APIC, which controls
 /// interrupt handling for that processor. It belongs in the processor's
 /// [`cpu::Cpu`] block.
+///
+/// # Safety
+/// Reads the `IA32_APIC_BASE` MSR, so it must run in kernel mode on the
+/// processor the handle is for.
 pub unsafe fn local_apic() -> LocalApic {
     LocalApicBuilder::new()
         .timer_vector(InterruptIndex::Timer as usize)
@@ -29,12 +33,19 @@ pub unsafe fn local_apic() -> LocalApic {
 }
 
 /// Enables the current processor's local APIC, which also starts its timer.
+///
+/// # Safety
+/// The processor's per-CPU block must exist and the interrupt table must be
+/// loaded, since interrupts can arrive as soon as the APIC is enabled.
 pub unsafe fn install_local_apic() {
     cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().enable() });
 }
 
 /// Masks every line of the legacy 8259 PICs, which the firmware may have
 /// left enabled, so that only the local APIC delivers interrupts.
+///
+/// # Safety
+/// Writes to the PICs' I/O ports, so nothing else may be driving them.
 pub unsafe fn disable_legacy_pic() {
     Port::<u8>::new(0x21).write(0xFF);
     Port::<u8>::new(0xA1).write(0xFF);
