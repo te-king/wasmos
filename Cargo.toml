@@ -9,7 +9,7 @@ members = ["crates/kernel", "crates/wlib", "crates/wshell"]
 
 [dependencies]
 ovmf-prebuilt = { git = "https://github.com/rust-osdev/ovmf-prebuilt.git", branch = "release" }
-tempdir = "0.3"
+tempfile = "3.27"
 anyhow = "1"
 
 [build-dependencies]

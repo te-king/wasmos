@@ -3,7 +3,6 @@ use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use tempdir::TempDir;
 
 // QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
 // what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
@@ -19,7 +18,7 @@ fn main() -> Result<()> {
     let timeout = timeout()?;
 
     // Create a temporary directory to store the EFI boot files
-    let dir = TempDir::new("kernel")?;
+    let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
 
     // Create the EFI boot directory
     let efi_boot = dir.path().join("EFI").join("BOOT");
