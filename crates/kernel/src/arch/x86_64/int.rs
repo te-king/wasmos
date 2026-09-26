@@ -1,7 +1,8 @@
-use spin::{LazyLock, Mutex};
+use spin::LazyLock;
 use x2apic::lapic::{xapic_base, LocalApic, LocalApicBuilder};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
+use super::cpu;
 use crate::logln;
 
 #[repr(u8)]
@@ -11,32 +12,22 @@ enum InterruptIndex {
     SPURIOUS = 34,
 }
 
-/// `LocalApic` is deliberately `!Send`: it drives the APIC of the processor
-/// it was built on. The kernel only runs on the bootstrap processor, so the
-/// handle never leaves the processor that created it.
-struct BspLocalApic(LocalApic);
-
-// SAFETY: see above. This needs per-processor storage instead once other
-// processors are started.
-unsafe impl Send for BspLocalApic {}
-
-/// The local APIC is a per-processor register that controls the interrupt
-/// handling for the processor.
-static LAPIC: LazyLock<Mutex<BspLocalApic>> = LazyLock::new(|| unsafe {
-    Mutex::new(BspLocalApic(
-        LocalApicBuilder::new()
-            .timer_vector(InterruptIndex::TIMER as usize)
-            .error_vector(InterruptIndex::ERROR as usize)
-            .spurious_vector(InterruptIndex::SPURIOUS as usize)
-            .set_xapic_base(xapic_base())
-            .build()
-            .unwrap(),
-    ))
-});
+/// Builds a handle to the current processor's local APIC, which controls
+/// interrupt handling for that processor. It belongs in the processor's
+/// [`cpu::Cpu`] block.
+pub unsafe fn local_apic() -> LocalApic {
+    LocalApicBuilder::new()
+        .timer_vector(InterruptIndex::TIMER as usize)
+        .error_vector(InterruptIndex::ERROR as usize)
+        .spurious_vector(InterruptIndex::SPURIOUS as usize)
+        .set_xapic_base(xapic_base())
+        .build()
+        .unwrap()
+}
 
 ///
 pub unsafe fn install_local_apic() {
-    // LAPIC.lock().enable();
+    // cpu::with(|cpu| cpu.lapic.borrow_mut().enable());
 }
 
 /// The interrupt table defines a set of functions that get called when
@@ -78,7 +69,7 @@ extern "x86-interrupt" fn timer_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("TIMER:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().0.end_of_interrupt() };
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
 
 extern "x86-interrupt" fn error_handler(
@@ -86,7 +77,7 @@ extern "x86-interrupt" fn error_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("ERROR:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().0.end_of_interrupt() };
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
 
 extern "x86-interrupt" fn spurious_handler(
@@ -94,5 +85,5 @@ extern "x86-interrupt" fn spurious_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("SPURIOUS:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().0.end_of_interrupt() };
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }

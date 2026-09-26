@@ -25,7 +25,7 @@ pub fn _log(args: core::fmt::Arguments) {
 #[macro_export]
 macro_rules! log {
 	($($arg:tt)*) => {
-		$crate::log::_log(format_args!($($arg)*));
+		$crate::log::_log(format_args!($($arg)*))
 	};
 }
 
