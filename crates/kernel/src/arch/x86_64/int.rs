@@ -73,16 +73,24 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     crate::timer::tick();
-    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
+    end_of_interrupt();
 }
 
 extern "x86-interrupt" fn error_handler(stack_frame: InterruptStackFrame) {
     logln!("ERROR:\n{:#?}", stack_frame);
-    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
+    end_of_interrupt();
 }
 
 extern "x86-interrupt" fn spurious_handler(stack_frame: InterruptStackFrame) {
     // No end-of-interrupt: a spurious interrupt isn't marked in service, so
     // an EOI here would retire some other interrupt instead.
     logln!("SPURIOUS:\n{:#?}", stack_frame);
+}
+
+/// Tells the current processor's local APIC that the interrupt being handled
+/// is finished, so it can deliver the next one.
+fn end_of_interrupt() {
+    // SAFETY: Only called at the end of handlers for interrupts that the
+    // local APIC delivered (never for spurious interrupts; see above).
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().end_of_interrupt() });
 }
