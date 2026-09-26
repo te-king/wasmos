@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned to a nightly contemporary with Cargo.lock. Newer nightlies changed the
+# unstable `Step` trait, which breaks x86_64 0.14 (pulled in with its
+# `step_trait` feature by x2apic 0.4).
+channel = "nightly-2024-02-21"
+targets = ["x86_64-unknown-uefi", "wasm32-unknown-unknown"]

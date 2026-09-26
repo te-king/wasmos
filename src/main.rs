@@ -1,8 +1,22 @@
-use anyhow::Result;
+use std::env::VarError;
+use std::process::{Child, ExitStatus};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context, Result};
 use tempdir::TempDir;
+
+// QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
+// what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
+const QEMU_EXIT_SUCCESS: i32 = (0x10 << 1) | 1;
+const QEMU_EXIT_FAILED: i32 = (0x11 << 1) | 1;
+
+// How long QEMU may run before it is killed. Override (in seconds) with
+// `WASMOS_TIMEOUT`; a value of 0 disables the timeout.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn main() -> Result<()> {
     let kernel = std::env!("KERNEL_PATH");
+    let timeout = timeout()?;
 
     // Create a temporary directory to store the EFI boot files
     let dir = TempDir::new("kernel")?;
@@ -22,10 +36,49 @@ fn main() -> Result<()> {
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),
     ]);
-    let _ = cmd.spawn()?.wait()?;
+    let mut child = cmd.spawn()?;
+    let status = wait_with_timeout(&mut child, timeout)?;
 
     // Clean up the temporary directory
     dir.close()?;
 
-    Ok(())
+    match status.code() {
+        Some(QEMU_EXIT_SUCCESS) => Ok(()),
+        Some(QEMU_EXIT_FAILED) => bail!("kernel reported failure"),
+        Some(code) => bail!("QEMU exited unexpectedly with status {code}"),
+        None => bail!("QEMU was terminated by a signal"),
+    }
+}
+
+fn timeout() -> Result<Option<Duration>> {
+    match std::env::var("WASMOS_TIMEOUT") {
+        Ok(secs) => {
+            let secs: u64 = secs
+                .parse()
+                .with_context(|| format!("invalid WASMOS_TIMEOUT {secs:?}"))?;
+            Ok((secs != 0).then(|| Duration::from_secs(secs)))
+        }
+        Err(VarError::NotPresent) => Ok(Some(DEFAULT_TIMEOUT)),
+        Err(err) => Err(err).context("invalid WASMOS_TIMEOUT"),
+    }
+}
+
+/// Waits for `child` to exit, killing it if it is still running after `timeout`.
+fn wait_with_timeout(child: &mut Child, timeout: Option<Duration>) -> Result<ExitStatus> {
+    let Some(timeout) = timeout else {
+        return Ok(child.wait()?);
+    };
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            bail!("kernel timed out after {}s", timeout.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
