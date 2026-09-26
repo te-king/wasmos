@@ -2,7 +2,7 @@ use uart_16550::{Config, Uart16550Tty};
 use uefi::{boot, entry, mem::memory_map::MemoryType, Status};
 use x86_64::instructions::interrupts;
 
-use crate::{kernel_main, log, logln, qemu};
+use crate::{executor, kernel_main, log, logln, qemu};
 
 mod cpu;
 mod int;
@@ -36,8 +36,11 @@ fn main() -> Status {
         Err(err) => logln!("smp: MP Services unavailable: {:?}", err),
     }
 
-    match kernel_main() {
-        Ok(_) => Status::SUCCESS,
+    match executor::block_on(kernel_main()) {
+        Ok(()) => {
+            qemu::exit_qemu(qemu::QemuExitCode::Success);
+            Status::SUCCESS
+        }
         Err(err) => {
             logln!("kernel: {}", err);
             qemu::exit_qemu(qemu::QemuExitCode::Failed);

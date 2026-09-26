@@ -6,21 +6,20 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use futures_util::StreamExt;
-use sync::{executor::SimpleExecutor, task::Task};
+use futures_util::{future::join, StreamExt};
 use wasmi::{Caller, Engine, Error, Func, Linker, Module, Store, TrapCode};
 
 #[path = "arch/x86_64/mod.rs"]
 mod arch;
 
+mod executor;
 mod log;
 mod qemu;
-mod sync;
 mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
-pub fn kernel_main() -> Result<(), Error> {
+pub async fn kernel_main() -> Result<(), Error> {
     let engine = Engine::default();
     let mut linker = Linker::<()>::new(&engine);
     let mut store = Store::<()>::new(&engine, ());
@@ -59,12 +58,7 @@ pub fn kernel_main() -> Result<(), Error> {
     let hello = instance.get_typed_func::<(), ()>(&store, "main")?;
     hello.call(&mut store, ())?;
 
-    let mut executor = SimpleExecutor::new();
-    executor.spawn(Task::new(example_task()));
-    executor.spawn(Task::new(tick_task()));
-    executor.run();
-
-    qemu::exit_qemu(qemu::QemuExitCode::Success);
+    join(example_task(), tick_task()).await;
     Ok(())
 }
 
