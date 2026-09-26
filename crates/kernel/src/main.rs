@@ -40,7 +40,7 @@ pub fn kernel_main() -> Result<(), ()> {
                 .map_err(|_| TrapCode::MemoryOutOfBounds)?;
             let s = core::str::from_utf8(&buffer)
                 .map_err(|_| Error::new("wasmos_print: string is not valid UTF-8"))?;
-            logln!("{}", s);
+            log!("{}", s);
             Ok(())
         },
     );
