@@ -66,7 +66,7 @@ checksum = "8e04e2fd2b8188ea827b32ef11de88377086d690286ab35747ef7f9bf3ccb590"
 name = "kernel"
 version = "0.1.0"
 dependencies = [
- "spin",
+ "spin 0.12.3",
  "talc",
  "uart_16550",
  "uefi",
@@ -240,6 +240,12 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
 dependencies = [
  "lock_api",
 ]
@@ -367,7 +373,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77a8281d1d660cdf54c76a3efa9ddd0c270cada1383a995db3ccb43d166456c7"
 dependencies = [
  "smallvec",
- "spin",
+ "spin 0.9.8",
  "wasmi_arena",
  "wasmi_core",
  "wasmparser-nostd",

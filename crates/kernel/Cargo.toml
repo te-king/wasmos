@@ -7,7 +7,7 @@ edition = "2021"
 wasmi = { version = "0.31.2", default-features = false }
 uefi = "0.26.0"
 talc = "4.2.0"
-spin = "0.9.8"
+spin = "0.12.3"
 
 # x86_64 stuff
 x2apic = "0.5.0"

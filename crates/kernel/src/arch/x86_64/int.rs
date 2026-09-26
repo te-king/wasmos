@@ -1,4 +1,4 @@
-use spin::{Lazy, Mutex};
+use spin::{LazyLock, Mutex};
 use x2apic::lapic::{xapic_base, LocalApic, LocalApicBuilder};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
@@ -22,7 +22,7 @@ unsafe impl Send for BspLocalApic {}
 
 /// The local APIC is a per-processor register that controls the interrupt
 /// handling for the processor.
-static LAPIC: Lazy<Mutex<BspLocalApic>> = Lazy::new(|| unsafe {
+static LAPIC: LazyLock<Mutex<BspLocalApic>> = LazyLock::new(|| unsafe {
     Mutex::new(BspLocalApic(
         LocalApicBuilder::new()
             .timer_vector(InterruptIndex::TIMER as usize)
@@ -41,7 +41,7 @@ pub unsafe fn install_local_apic() {
 
 /// The interrupt table defines a set of functions that get called when
 /// an interrupt is triggered.
-static INTERRUPT_TABLE: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
+static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.double_fault.set_handler_fn(double_fault_handler);
     idt.breakpoint.set_handler_fn(breakpoint_handler);
