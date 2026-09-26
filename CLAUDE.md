@@ -24,14 +24,14 @@ cargo fmt --all
 cargo fmt --all --check
 cargo clippy -p kernel --target x86_64-unknown-uefi -- -D warnings
 cargo clippy -p wlib -p wshell --target wasm32-unknown-unknown -- -D warnings
-cargo clippy -p wasmos -- -D warnings
+cargo clippy -p wasmos -p wasmos-abi -- -D warnings
 ```
 
 ### Testing
 
 There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. The futures `kernel_main` joins (e.g. `tick_task`) act as boot-time smoke tests.
 
-To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::wasmos_print` from wshell to test guest traps.
+To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, and a bad pointer passed to `wlib::sys::wasmos_print` from wshell to test guest traps.
 
 The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `target/ovmf` on first run, so `cargo clean` forces a re-download.
 
@@ -40,8 +40,8 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 ### Workspace and build pipeline
 - The root package (`src/main.rs`, `build.rs`) is the **host runner**, not the kernel. `build.rs` receives the kernel's `.efi` path through a cargo artifact dependency (`bindeps`, enabled in `.cargo/config.toml`). The runner copies it to `EFI/BOOT/BOOTX64.EFI` on a temporary FAT drive and boots QEMU with `-smp 4` and OVMF as read-only pflash.
 - `crates/kernel` is the UEFI kernel (`x86_64-unknown-uefi`, `no_std`). It depends on `crates/wshell` as a `wasm32-unknown-unknown` artifact and embeds it with `include_bytes!`.
-- `crates/wshell` is the first guest program. `crates/wlib` is the guest-side standard library: it declares the host imports (wasm import module `"host"`) and the `print!`/`println!` macros.
-- **Guest ABI:** host functions are defined in `kernel_main` (`crates/kernel/src/main.rs`) and declared by name in `wlib`. The names and signatures must match on both sides. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
+- `crates/wshell` is the first guest program. `crates/wlib` is the guest-side standard library: raw host imports in `wlib::sys`, safe wrappers (`wlib::print`) and the `print!`/`println!` macros.
+- **Guest ABI:** `crates/abi` (`wasmos-abi`) holds the import module name, host function names and guest entry point as constants. The kernel defines host functions in `crates/kernel/src/host.rs` using them. `wlib` must use string literals in its import attributes, so it checks them against the constants with compile-time `assert!`s: renaming one side without the other fails the build. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
 - `x86_64-unknown-uefi` is a Windows-style (COFF) target: `#[thread_local]` fails to link (`_tls_index`), which is why per-CPU data uses the GS base instead.
 
 ### Boot sequence (`crates/kernel/src/arch/x86_64/mod.rs`)

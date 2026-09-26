@@ -35,7 +35,7 @@ jobs:
         run: |
           cargo clippy --locked -p kernel --target x86_64-unknown-uefi -- -D warnings
           cargo clippy --locked -p wlib -p wshell --target wasm32-unknown-unknown -- -D warnings
-          cargo clippy --locked -p wasmos -- -D warnings
+          cargo clippy --locked -p wasmos -p wasmos-abi -- -D warnings
 
       - name: Build
         run: cargo build --locked

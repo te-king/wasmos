@@ -5,7 +5,7 @@ edition = "2021"
 
 [workspace]
 resolver = "2"
-members = ["crates/kernel", "crates/wlib", "crates/wshell"]
+members = ["crates/abi", "crates/kernel", "crates/wlib", "crates/wshell"]
 
 [dependencies]
 ovmf-prebuilt = "0.2.9"

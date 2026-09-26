@@ -261,6 +261,7 @@ dependencies = [
  "uart_16550",
  "uefi",
  "wasmi",
+ "wasmos-abi",
  "wshell",
  "x2apic",
  "x86_64",
@@ -730,6 +731,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmos-abi"
+version = "0.1.0"
+
+[[package]]
 name = "wasmparser"
 version = "0.228.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,6 +843,9 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "wlib"
 version = "0.1.0"
+dependencies = [
+ "wasmos-abi",
+]
 
 [[package]]
 name = "wshell"
