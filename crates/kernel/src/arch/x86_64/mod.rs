@@ -38,7 +38,8 @@ fn main() -> Status {
 
     match kernel_main() {
         Ok(_) => Status::SUCCESS,
-        Err(_) => {
+        Err(err) => {
+            logln!("kernel: {}", err);
             qemu::exit_qemu(qemu::QemuExitCode::Failed);
             Status::UNSUPPORTED
         }

@@ -20,7 +20,7 @@ mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
-pub fn kernel_main() -> Result<(), ()> {
+pub fn kernel_main() -> Result<(), Error> {
     let engine = Engine::default();
     let mut linker = Linker::<()>::new(&engine);
     let mut store = Store::<()>::new(&engine, ());
@@ -45,19 +45,19 @@ pub fn kernel_main() -> Result<(), ()> {
         },
     );
 
-    linker.define("host", "wasmos_print", wasmos_print).unwrap();
+    linker.define("host", "wasmos_print", wasmos_print)?;
 
     let host_hello = Func::wrap(&mut store, |parameter: i32| {
         logln!("Got {} from WebAssembly", parameter);
     });
 
-    linker.define("host", "hello", host_hello).unwrap();
+    linker.define("host", "hello", host_hello)?;
 
-    let module = Module::new(&engine, WSHELL).unwrap();
-    let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
+    let module = Module::new(&engine, WSHELL)?;
+    let instance = linker.instantiate_and_start(&mut store, &module)?;
 
-    let hello = instance.get_typed_func::<(), ()>(&store, "main").unwrap();
-    hello.call(&mut store, ()).unwrap();
+    let hello = instance.get_typed_func::<(), ()>(&store, "main")?;
+    hello.call(&mut store, ())?;
 
     let mut executor = SimpleExecutor::new();
     executor.spawn(Task::new(example_task()));

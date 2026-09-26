@@ -10,9 +10,9 @@ use crate::logln;
 
 #[repr(u8)]
 enum InterruptIndex {
-    TIMER = 32,
-    ERROR = 33,
-    SPURIOUS = 34,
+    Timer = 32,
+    Error = 33,
+    Spurious = 34,
 }
 
 /// Builds a handle to the current processor's local APIC, which controls
@@ -20,9 +20,9 @@ enum InterruptIndex {
 /// [`cpu::Cpu`] block.
 pub unsafe fn local_apic() -> LocalApic {
     LocalApicBuilder::new()
-        .timer_vector(InterruptIndex::TIMER as usize)
-        .error_vector(InterruptIndex::ERROR as usize)
-        .spurious_vector(InterruptIndex::SPURIOUS as usize)
+        .timer_vector(InterruptIndex::Timer as usize)
+        .error_vector(InterruptIndex::Error as usize)
+        .spurious_vector(InterruptIndex::Spurious as usize)
         .set_xapic_base(xapic_base())
         .build()
         .unwrap()
@@ -46,9 +46,9 @@ static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.double_fault.set_handler_fn(double_fault_handler);
     idt.breakpoint.set_handler_fn(breakpoint_handler);
-    idt[InterruptIndex::TIMER as u8].set_handler_fn(timer_handler);
-    idt[InterruptIndex::ERROR as u8].set_handler_fn(error_handler);
-    idt[InterruptIndex::SPURIOUS as u8].set_handler_fn(spurious_handler);
+    idt[InterruptIndex::Timer as u8].set_handler_fn(timer_handler);
+    idt[InterruptIndex::Error as u8].set_handler_fn(error_handler);
+    idt[InterruptIndex::Spurious as u8].set_handler_fn(spurious_handler);
     idt
 });
 
