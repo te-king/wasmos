@@ -35,6 +35,7 @@ fn main() -> Result<()> {
 
     let mut cmd = std::process::Command::new("qemu-system-x86_64");
     cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
+    cmd.args(["-smp", "4"]);
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
     cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));

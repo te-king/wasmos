@@ -8,11 +8,15 @@ mod int;
 mod io;
 mod mem;
 mod panic;
+mod smp;
 
 #[entry]
 fn main() -> Status {
-    // SAFETY: Nothing has used boot services yet, so no references to
-    // boot-services resources remain.
+    // MP Services is a boot service, so this has to happen first.
+    let processors = smp::discover();
+
+    // SAFETY: Discovery closed the protocol it opened, and nothing else has
+    // used boot services, so no references to boot-services resources remain.
     let memory_map = unsafe { boot::exit_boot_services(Some(MemoryType::RUNTIME_SERVICES_DATA)) };
 
     unsafe {
@@ -24,6 +28,10 @@ fn main() -> Status {
         int::install_local_apic();
     }
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+    match processors {
+        Ok(processors) => processors.log(),
+        Err(err) => logln!("smp: MP Services unavailable: {:?}", err),
+    }
 
     match kernel_main() {
         Ok(_) => Status::SUCCESS,
