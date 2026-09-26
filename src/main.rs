@@ -1,9 +1,10 @@
 use std::env::VarError;
+use std::path::Path;
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use tempdir::TempDir;
+use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 
 // QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
 // what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
@@ -18,8 +19,12 @@ fn main() -> Result<()> {
     let kernel = std::env!("KERNEL_PATH");
     let timeout = timeout()?;
 
+    // Download (and verify) the OVMF firmware on first run, then reuse the cache.
+    let ovmf = Prebuilt::fetch(Source::LATEST, concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"))
+        .context("failed to fetch OVMF firmware")?;
+
     // Create a temporary directory to store the EFI boot files
-    let dir = TempDir::new("kernel")?;
+    let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
 
     // Create the EFI boot directory
     let efi_boot = dir.path().join("EFI").join("BOOT");
@@ -31,7 +36,8 @@ fn main() -> Result<()> {
     let mut cmd = std::process::Command::new("qemu-system-x86_64");
     cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
-    cmd.arg("-bios").arg(ovmf_prebuilt::ovmf_pure_efi());
+    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
+    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
     cmd.args([
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),
@@ -48,6 +54,11 @@ fn main() -> Result<()> {
         Some(code) => bail!("QEMU exited unexpectedly with status {code}"),
         None => bail!("QEMU was terminated by a signal"),
     }
+}
+
+/// A read-only flash drive for one of the OVMF firmware images.
+fn pflash(path: &Path) -> String {
+    format!("if=pflash,format=raw,readonly=on,file={}", path.display())
 }
 
 fn timeout() -> Result<Option<Duration>> {

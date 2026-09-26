@@ -1,7 +1,9 @@
 use core::{cell::OnceCell, fmt::Write};
 
-use uart_16550::SerialPort;
+use uart_16550::{backend::PioBackend, Uart16550Tty};
 use x86_64::instructions::interrupts;
+
+type SerialPort = Uart16550Tty<PioBackend>;
 
 static STDIO_PORT: spin::Mutex<OnceCell<SerialPort>> = spin::Mutex::new(OnceCell::new());
 
