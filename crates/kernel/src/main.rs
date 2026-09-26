@@ -5,10 +5,7 @@
 extern crate alloc;
 
 use sync::{executor::SimpleExecutor, task::Task};
-use wasmi::{
-    core::{Trap, TrapCode},
-    Caller, Engine, Func, Linker, Module, Store,
-};
+use wasmi::{Caller, Engine, Error, Func, Linker, Module, Store, TrapCode};
 
 #[path = "arch/x86_64/mod.rs"]
 mod arch;
@@ -26,19 +23,19 @@ pub fn kernel_main() -> Result<(), ()> {
 
     let wasmos_print = Func::wrap(
         &mut store,
-        |caller: Caller<'_, _>, offset: u32, length: u32| -> Result<(), Trap> {
+        |caller: Caller<'_, _>, offset: u32, length: u32| -> Result<(), Error> {
             // Bad input from the guest traps the guest rather than panicking the kernel.
             let memory = caller
                 .get_export("memory")
                 .and_then(|export| export.into_memory())
-                .ok_or_else(|| Trap::new("wasmos_print: guest has no 'memory' export"))?;
+                .ok_or_else(|| Error::new("wasmos_print: guest has no 'memory' export"))?;
 
             let mut buffer = alloc::vec![0u8; length as usize];
             memory
                 .read(caller, offset as usize, &mut buffer)
                 .map_err(|_| TrapCode::MemoryOutOfBounds)?;
             let s = core::str::from_utf8(&buffer)
-                .map_err(|_| Trap::new("wasmos_print: string is not valid UTF-8"))?;
+                .map_err(|_| Error::new("wasmos_print: string is not valid UTF-8"))?;
             logln!("{}", s);
             Ok(())
         },
@@ -54,11 +51,7 @@ pub fn kernel_main() -> Result<(), ()> {
 
     // ceate an instance
     let module = Module::new(&engine, WSHELL).unwrap();
-    let instance = linker
-        .instantiate(&mut store, &module)
-        .unwrap()
-        .start(&mut store)
-        .unwrap();
+    let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
 
     let hello = instance.get_typed_func::<(), ()>(&store, "main").unwrap();
     hello.call(&mut store, ()).unwrap();

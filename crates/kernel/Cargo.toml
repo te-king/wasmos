@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-wasmi = { version = "0.31.2", default-features = false }
+# validate: check guest modules before running them.
+# auto-dispatch: fall back to loop dispatch in unoptimised builds, where
+# tail-call dispatch would grow the kernel stack on every instruction.
+wasmi = { version = "2.0.0", default-features = false, features = [
+    "validate",
+    "auto-dispatch",
+] }
 uefi = "0.41.0"
 talc = "5.1.1"
 spin = "0.12.3"
