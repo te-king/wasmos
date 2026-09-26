@@ -4,17 +4,26 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::logln;
 
-#[repr(usize)]
+#[repr(u8)]
 enum InterruptIndex {
     TIMER = 32,
     ERROR = 33,
     SPURIOUS = 34,
 }
 
+/// `LocalApic` is deliberately `!Send`: it drives the APIC of the processor
+/// it was built on. The kernel only runs on the bootstrap processor, so the
+/// handle never leaves the processor that created it.
+struct BspLocalApic(LocalApic);
+
+// SAFETY: see above. This needs per-processor storage instead once other
+// processors are started.
+unsafe impl Send for BspLocalApic {}
+
 /// The local APIC is a per-processor register that controls the interrupt
 /// handling for the processor.
-static LAPIC: Lazy<Mutex<LocalApic>> = Lazy::new(|| unsafe {
-    Mutex::new(
+static LAPIC: Lazy<Mutex<BspLocalApic>> = Lazy::new(|| unsafe {
+    Mutex::new(BspLocalApic(
         LocalApicBuilder::new()
             .timer_vector(InterruptIndex::TIMER as usize)
             .error_vector(InterruptIndex::ERROR as usize)
@@ -22,7 +31,7 @@ static LAPIC: Lazy<Mutex<LocalApic>> = Lazy::new(|| unsafe {
             .set_xapic_base(xapic_base())
             .build()
             .unwrap(),
-    )
+    ))
 });
 
 ///
@@ -36,9 +45,9 @@ static INTERRUPT_TABLE: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.double_fault.set_handler_fn(double_fault_handler);
     idt.breakpoint.set_handler_fn(breakpoint_handler);
-    idt[InterruptIndex::TIMER as usize].set_handler_fn(timer_handler);
-    idt[InterruptIndex::ERROR as usize].set_handler_fn(error_handler);
-    idt[InterruptIndex::SPURIOUS as usize].set_handler_fn(spurious_handler);
+    idt[InterruptIndex::TIMER as u8].set_handler_fn(timer_handler);
+    idt[InterruptIndex::ERROR as u8].set_handler_fn(error_handler);
+    idt[InterruptIndex::SPURIOUS as u8].set_handler_fn(spurious_handler);
     idt
 });
 
@@ -69,7 +78,7 @@ extern "x86-interrupt" fn timer_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("TIMER:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().end_of_interrupt() };
+    unsafe { LAPIC.lock().0.end_of_interrupt() };
 }
 
 extern "x86-interrupt" fn error_handler(
@@ -77,7 +86,7 @@ extern "x86-interrupt" fn error_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("ERROR:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().end_of_interrupt() };
+    unsafe { LAPIC.lock().0.end_of_interrupt() };
 }
 
 extern "x86-interrupt" fn spurious_handler(
@@ -85,5 +94,5 @@ extern "x86-interrupt" fn spurious_handler(
     stack_frame: InterruptStackFrame,
 ) {
     logln!("SPURIOUS:\n{:#?}", stack_frame);
-    unsafe { LAPIC.lock().end_of_interrupt() };
+    unsafe { LAPIC.lock().0.end_of_interrupt() };
 }
