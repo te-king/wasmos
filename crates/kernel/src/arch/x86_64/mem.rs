@@ -1,8 +1,8 @@
-use talc::{ErrOnOom, Span, Talc, Talck};
+use talc::{source::Manual, TalcLock};
 use uefi::table::boot::{MemoryMap, MemoryType};
 
 #[global_allocator]
-static ALLOCATOR: Talck<spin::Mutex<()>, ErrOnOom> = Talc::new(ErrOnOom).lock();
+static ALLOCATOR: TalcLock<spin::Mutex<()>, Manual> = TalcLock::new(Manual);
 
 /// Register the memory map with the memory allocator
 ///
@@ -18,8 +18,8 @@ pub unsafe fn install_memory_map(memory_map: MemoryMap) {
         .filter(|m| m.phys_start != 0);
 
     for region in conventional {
-        let start = region.phys_start as usize;
-        let span = Span::from_base_size(start as *mut _, region.page_count as usize * 4096);
-        ALLOCATOR.lock().claim(span).unwrap();
+        let base = region.phys_start as *mut u8;
+        let size = region.page_count as usize * 4096;
+        ALLOCATOR.lock().claim(base, size).unwrap();
     }
 }

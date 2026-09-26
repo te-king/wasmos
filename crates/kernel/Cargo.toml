@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 wasmi = { version = "0.31.2", default-features = false }
 uefi = "0.26.0"
-talc = "4.2.0"
+talc = "5.1.1"
 spin = "0.12.3"
 
 # x86_64 stuff
