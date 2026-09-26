@@ -68,7 +68,8 @@ impl Stream for Ticks {
         }
         WAKER.register(cx.waker());
         // A tick may have landed between the first check and registering.
-        self.advance().map_or(Poll::Pending, |now| Poll::Ready(Some(now)))
+        self.advance()
+            .map_or(Poll::Pending, |now| Poll::Ready(Some(now)))
     }
 }
 

@@ -1,4 +1,7 @@
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::{
+    ptr,
+    task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
+};
 
 use alloc::collections::VecDeque;
 
@@ -38,7 +41,7 @@ fn dummy_raw_waker() -> RawWaker {
     }
 
     let vtable = &RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(0 as *const (), vtable)
+    RawWaker::new(ptr::null(), vtable)
 }
 
 fn dummy_waker() -> Waker {

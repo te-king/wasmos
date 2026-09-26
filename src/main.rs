@@ -15,13 +15,19 @@ const QEMU_EXIT_FAILED: i32 = (0x11 << 1) | 1;
 // `WASMOS_TIMEOUT`; a value of 0 disables the timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
+// Processors given to QEMU, so the kernel has application processors to find.
+const CPUS: &str = "4";
+
 fn main() -> Result<()> {
     let kernel = std::env!("KERNEL_PATH");
     let timeout = timeout()?;
 
     // Download (and verify) the OVMF firmware on first run, then reuse the cache.
-    let ovmf = Prebuilt::fetch(Source::LATEST, concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"))
-        .context("failed to fetch OVMF firmware")?;
+    let ovmf = Prebuilt::fetch(
+        Source::LATEST,
+        concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"),
+    )
+    .context("failed to fetch OVMF firmware")?;
 
     // Create a temporary directory to store the EFI boot files
     let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
@@ -31,14 +37,16 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&efi_boot)?;
 
     // Copy the kernel to the EFI boot directory
-    std::fs::copy(&kernel, efi_boot.join("BOOTX64.EFI")).unwrap();
+    std::fs::copy(kernel, efi_boot.join("BOOTX64.EFI"))?;
 
     let mut cmd = std::process::Command::new("qemu-system-x86_64");
     cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
-    cmd.args(["-smp", "4"]);
+    cmd.args(["-smp", CPUS]);
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
-    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
-    cmd.arg("-drive").arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
+    cmd.arg("-drive")
+        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
+    cmd.arg("-drive")
+        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
     cmd.args([
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),
