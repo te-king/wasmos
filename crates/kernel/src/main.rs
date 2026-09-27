@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use futures_util::{future::join, StreamExt};
+use futures_util::{StreamExt, future::join};
 use wasmi::{Engine, Error, Module, Store};
 
 mod arch;

@@ -93,7 +93,7 @@ The owner prefers **async**, **pure data / immutability**, and **functional styl
 - Prefer iterator/stream combinators and expression-oriented code over mutable loops where it reads naturally.
 
 Other conventions in this codebase:
-- Every `unsafe` block gets a `// SAFETY:` comment, and every `unsafe fn` a `# Safety` doc section.
+- Every `unsafe` block gets a `// SAFETY:` comment, and every `unsafe fn` a `# Safety` doc section. All crates are edition 2024, so the body of an `unsafe fn` isn't an unsafe context: wrap each unsafe operation in its own narrow `unsafe {}` block, whose `SAFETY` comment points back to the caller's obligations.
 - Comments explain why, not what.
 - `macro_rules!` expansions must not end in a trailing `;`: using such a macro in expression position is a hard error on current nightly.
 - Build and boot both debug and release before committing. Keep dependency updates one crate per commit, each verified by a boot.

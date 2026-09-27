@@ -1,7 +1,7 @@
 use core::fmt::Display;
 
-use uart_16550::{backend::PioBackend, Uart16550Tty};
-use uefi::{entry, Status};
+use uart_16550::{Uart16550Tty, backend::PioBackend};
+use uefi::{Status, entry};
 use x86_64::instructions::interrupts;
 
 use crate::{executor, kernel_main, logln};

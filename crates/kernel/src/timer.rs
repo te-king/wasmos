@@ -10,7 +10,7 @@ use core::{
     task::{Context, Poll},
 };
 
-use futures_util::{task::AtomicWaker, Stream};
+use futures_util::{Stream, task::AtomicWaker};
 
 /// Timer ticks since the timer was started.
 static TICKS: AtomicU64 = AtomicU64::new(0);

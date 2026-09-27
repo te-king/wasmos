@@ -1,5 +1,5 @@
 use spin::LazyLock;
-use x2apic::lapic::{xapic_base, LocalApic, LocalApicBuilder};
+use x2apic::lapic::{LocalApic, LocalApicBuilder, xapic_base};
 use x86_64::{
     instructions::port::Port,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
@@ -23,11 +23,13 @@ enum InterruptIndex {
 /// Reads the `IA32_APIC_BASE` MSR, so it must run in kernel mode on the
 /// processor the handle is for.
 pub unsafe fn local_apic() -> LocalApic {
+    // SAFETY: The caller guarantees kernel mode on the target processor.
+    let xapic_base = unsafe { xapic_base() };
     LocalApicBuilder::new()
         .timer_vector(InterruptIndex::Timer as usize)
         .error_vector(InterruptIndex::Error as usize)
         .spurious_vector(InterruptIndex::Spurious as usize)
-        .set_xapic_base(xapic_base())
+        .set_xapic_base(xapic_base)
         .build()
         .unwrap()
 }
@@ -47,8 +49,12 @@ pub unsafe fn install_local_apic() {
 /// # Safety
 /// Writes to the PICs' I/O ports, so nothing else may be driving them.
 pub unsafe fn disable_legacy_pic() {
-    Port::<u8>::new(0x21).write(0xFF);
-    Port::<u8>::new(0xA1).write(0xFF);
+    // SAFETY: 0x21 and 0xA1 are the PICs' data ports, where writing all ones
+    // masks every line; the caller guarantees nothing else drives them.
+    unsafe {
+        Port::<u8>::new(0x21).write(0xFF);
+        Port::<u8>::new(0xA1).write(0xFF);
+    }
 }
 
 /// The interrupt table defines a set of functions that get called when

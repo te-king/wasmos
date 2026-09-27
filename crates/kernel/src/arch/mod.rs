@@ -17,4 +17,4 @@ mod imp;
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("wasmos only supports x86_64 so far (aarch64 is planned)");
 
-pub use imp::{disable_interrupts, wait_for_interrupt, without_interrupts, Console};
+pub use imp::{Console, disable_interrupts, wait_for_interrupt, without_interrupts};

@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use core::{arch::asm, cell::RefCell, ptr};
 
 use x2apic::lapic::LocalApic;
-use x86_64::{instructions::interrupts, registers::model_specific::GsBase, VirtAddr};
+use x86_64::{VirtAddr, instructions::interrupts, registers::model_specific::GsBase};
 
 /// Data owned by a single processor.
 #[repr(C)]
