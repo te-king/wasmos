@@ -1,3 +1,8 @@
+use core::{
+    arch::x86_64::__cpuid,
+    sync::atomic::{Ordering, fence},
+};
+
 use spin::LazyLock;
 use x2apic::lapic::{LocalApic, LocalApicBuilder, xapic_base};
 use x86_64::{
@@ -41,6 +46,58 @@ pub unsafe fn local_apic() -> LocalApic {
 /// loaded, since interrupts can arrive as soon as the APIC is enabled.
 pub unsafe fn install_local_apic() {
     cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().enable() });
+}
+
+/// A processor's address for inter-processor interrupts, in the form that
+/// x2apic's IPI functions take.
+#[derive(Clone, Copy, Debug)]
+pub struct IpiDestination(u32);
+
+/// The IPI destination of the processor with local APIC ID `apic_id`, or
+/// `None` if the local APIC's mode can't address it.
+///
+/// x2apic writes the destination into the upper half of the ICR as is. That
+/// is the whole field in x2APIC mode, but xAPIC mode only reads its top
+/// byte, so there the ID has to be shifted into place.
+pub fn ipi_destination(apic_id: u64) -> Option<IpiDestination> {
+    if has_x2apic() {
+        u32::try_from(apic_id).ok().map(IpiDestination)
+    } else {
+        u8::try_from(apic_id)
+            .ok()
+            .map(|id| IpiDestination(u32::from(id) << 24))
+    }
+}
+
+/// Whether the local APIC is in x2APIC mode, which x2apic's builder picks
+/// exactly when the processor supports it.
+fn has_x2apic() -> bool {
+    __cpuid(1).ecx & (1 << 21) != 0
+}
+
+/// Sends an INIT IPI, which resets `dest` and leaves it waiting for a
+/// startup IPI.
+///
+/// # Safety
+/// `dest` must not be running anything: INIT stops it wherever it is.
+pub unsafe fn send_init(dest: IpiDestination) {
+    // SAFETY: The caller guarantees that resetting `dest` is harmless.
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().send_init_ipi(dest.0) });
+}
+
+/// Sends a startup IPI, which starts `dest` in real mode at the start of
+/// page `vector`, if it is waiting for one.
+///
+/// Everything written before this call is visible to `dest` when it starts.
+///
+/// # Safety
+/// That page must hold code for a starting processor to run.
+pub unsafe fn send_startup(dest: IpiDestination, vector: u8) {
+    // In x2APIC mode the IPI is sent by a WRMSR, which doesn't wait for
+    // earlier stores (such as the startup code's data) to become visible.
+    fence(Ordering::SeqCst);
+    // SAFETY: The caller guarantees the page holds startup code.
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().send_sipi(vector, dest.0) });
 }
 
 /// Masks every line of the legacy 8259 PICs, which the firmware may have

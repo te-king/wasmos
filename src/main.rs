@@ -42,6 +42,10 @@ fn main() -> Result<()> {
     let mut cmd = std::process::Command::new("qemu-system-x86_64");
     cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
     cmd.args(["-smp", CPUS]);
+    // A reset stops QEMU rather than rebooting into the kernel again. On a
+    // triple fault (on any processor) the kernel can't report anything, and
+    // would otherwise boot in a loop until the timeout.
+    cmd.arg("-no-reboot");
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
     cmd.arg("-drive")
         .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
@@ -60,6 +64,7 @@ fn main() -> Result<()> {
     match status.code() {
         Some(QEMU_EXIT_SUCCESS) => Ok(()),
         Some(QEMU_EXIT_FAILED) => bail!("kernel reported failure"),
+        Some(0) => bail!("the machine reset or shut down, e.g. on a triple fault"),
         Some(code) => bail!("QEMU exited unexpectedly with status {code}"),
         None => bail!("QEMU was terminated by a signal"),
     }

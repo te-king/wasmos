@@ -1,17 +1,29 @@
-//! Discovery of the platform's processors.
+//! Discovery and startup of the platform's processors.
 //!
 //! The processors are enumerated through UEFI's MP Services protocol, which
-//! is only available before boot services are exited.
+//! is only available before boot services are exited. The application
+//! processors are started afterwards, with INIT and startup IPIs into the
+//! [`Trampoline`].
 
 use alloc::vec::Vec;
-use core::{fmt, iter};
+use core::{error, fmt, future, iter};
 
+use futures_util::StreamExt;
 use uefi::{
     boot,
     proto::pi::mp::{MpServices, ProcessorInformation},
 };
 
-use super::boot::BootServices;
+use super::{
+    boot::{BootServices, Interrupts},
+    int,
+    trampoline::Trampoline,
+};
+use crate::timer::{self, Ticks};
+
+/// How long to wait for a processor to enter the kernel, in timer ticks.
+/// It takes well under a tick; this is about a second.
+const START_TIMEOUT: usize = 100;
 
 /// A processor found at boot.
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +57,17 @@ pub enum DiscoveryError {
     Firmware(uefi::Error),
     /// The firmware didn't report exactly one bootstrap processor.
     BspCount(usize),
+}
+
+/// Why the application processors couldn't all be started.
+#[derive(Debug)]
+pub enum StartError {
+    /// No page below 1 MiB was free for the trampoline.
+    Trampoline(uefi::Error),
+    /// The local APIC can't address the processor in its current mode.
+    Unaddressable { id: u32, apic_id: u64 },
+    /// The processor didn't enter the kernel in time.
+    Timeout { id: u32, apic_id: u64 },
 }
 
 impl Processors {
@@ -108,6 +131,24 @@ impl fmt::Display for DiscoveryError {
     }
 }
 
+impl fmt::Display for StartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StartError::Trampoline(err) => {
+                write!(f, "no page below 1 MiB for the trampoline: {err:?}")
+            }
+            StartError::Unaddressable { id, apic_id } => {
+                write!(f, "cpu {id}: apic {apic_id} can't be addressed")
+            }
+            StartError::Timeout { id, apic_id } => {
+                write!(f, "cpu {id}: apic {apic_id} didn't start")
+            }
+        }
+    }
+}
+
+impl error::Error for StartError {}
+
 /// Enumerates the processors through UEFI's MP Services protocol.
 ///
 /// Needs boot services, hence the token. The protocol is closed again before
@@ -131,4 +172,67 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
         aps: aps.into_iter().map(Processor::from).collect(),
         enabled: count.enabled,
     })
+}
+
+/// Starts every enabled application processor, one at a time, each running
+/// `main` with its logical index.
+///
+/// Needs interrupts, since the delays between IPIs are timed in ticks.
+pub async fn start(
+    _: &Interrupts,
+    processors: &Processors,
+    mut trampoline: Trampoline,
+    main: fn(u32) -> !,
+) -> Result<(), StartError> {
+    let mut ticks = timer::ticks().expect("nothing else is using the timer yet");
+    let enabled = (1..)
+        .zip(&processors.aps)
+        .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
+    for (id, ap) in enabled {
+        start_one(&mut ticks, &mut trampoline, id, ap, main).await?;
+    }
+    Ok(())
+}
+
+/// Starts one processor with the INIT, startup, startup IPI sequence.
+///
+/// On a timeout, the trampoline must not be prepared again: the processor
+/// might still arrive and read its handoff.
+async fn start_one(
+    ticks: &mut Ticks,
+    trampoline: &mut Trampoline,
+    id: u32,
+    ap: &Processor,
+    main: fn(u32) -> !,
+) -> Result<(), StartError> {
+    let apic_id = ap.apic_id;
+    let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;
+    trampoline.prepare(id, main);
+
+    // SAFETY: `dest` is an application processor that the kernel hasn't
+    // started, so it is parked by the firmware, running nothing of ours.
+    unsafe { int::send_init(dest) };
+    // Two ticks is at least one full tick, about 10 ms.
+    sleep(ticks, 2).await;
+    // Intel's sequence sends a second startup IPI in case the first is
+    // missed. A processor that has already started ignores it.
+    for limit in [2, START_TIMEOUT] {
+        // SAFETY: `prepare` put the trampoline in the page at `vector`.
+        unsafe { int::send_startup(dest, trampoline.vector()) };
+        if wait_until(ticks, limit, || trampoline.arrived()).await {
+            return Ok(());
+        }
+    }
+    Err(StartError::Timeout { id, apic_id })
+}
+
+/// Waits for `count` timer ticks.
+async fn sleep(ticks: &mut Ticks, count: usize) {
+    ticks.take(count).for_each(|_| future::ready(())).await;
+}
+
+/// Waits for `done` to return true, checking it on each tick. Returns false
+/// if it hasn't after `limit` ticks.
+async fn wait_until(ticks: &mut Ticks, limit: usize, done: impl Fn() -> bool) -> bool {
+    done() || ticks.take(limit).any(|_| future::ready(done())).await
 }
