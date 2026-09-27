@@ -13,7 +13,7 @@ use core::{
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
 };
 
-use x86_64::instructions::interrupts;
+use crate::arch;
 
 /// Set when the root future has been woken since it was last polled.
 static WOKEN: AtomicBool = AtomicBool::new(false);
@@ -39,15 +39,9 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
         if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
             break output;
         }
-        // With interrupts off, a wake-up from an interrupt handler can't land
-        // between checking the flag and halting. `enable_and_hlt` re-enables
-        // them atomically with the halt, so the next interrupt resumes us.
-        interrupts::disable();
-        if WOKEN.load(Ordering::Acquire) {
-            interrupts::enable();
-        } else {
-            interrupts::enable_and_hlt();
-        }
+        // The flag is checked with interrupts off, so a wake-up from an
+        // interrupt handler can't be missed between the check and the halt.
+        arch::wait_for_interrupt(|| WOKEN.load(Ordering::Acquire));
     };
 
     RUNNING.store(false, Ordering::Release);

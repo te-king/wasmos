@@ -1,20 +1,17 @@
 use core::{cell::OnceCell, fmt::Write};
 
-use uart_16550::{backend::PioBackend, Uart16550Tty};
-use x86_64::instructions::interrupts;
+use crate::arch::{self, Console};
 
-type SerialPort = Uart16550Tty<PioBackend>;
-
-static STDIO_PORT: spin::Mutex<OnceCell<SerialPort>> = spin::Mutex::new(OnceCell::new());
+static STDIO_PORT: spin::Mutex<OnceCell<Console>> = spin::Mutex::new(OnceCell::new());
 
 /// Installs a serial port as the global stdio writer.
-pub fn install_stdio_port(port: SerialPort) -> Result<(), SerialPort> {
+pub fn install_stdio_port(port: Console) -> Result<(), Console> {
     STDIO_PORT.lock().set(port)
 }
 
 #[doc(hidden)]
 pub fn _log(args: core::fmt::Arguments) {
-    interrupts::without_interrupts(|| {
+    arch::without_interrupts(|| {
         if let Some(writer) = STDIO_PORT.lock().get_mut() {
             // Logging is best-effort: a failing `Display` impl shouldn't panic.
             let _ = writer.write_fmt(args);
@@ -28,7 +25,7 @@ pub fn _log(args: core::fmt::Arguments) {
 /// waiting for the lock could hang forever. The kernel is going down, so the
 /// message matters more than the lock: if it's held, it's forced open.
 pub fn log_panic(args: core::fmt::Arguments) {
-    interrupts::disable();
+    arch::disable_interrupts();
     if STDIO_PORT.is_locked() {
         // SAFETY: Nothing runs after the panic handler, so whoever holds the
         // lock never touches the port again. Another processor holding it
