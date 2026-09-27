@@ -2,7 +2,7 @@ use talc::{TalcLock, source::Claim};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 
 /// UEFI memory map pages are always 4 KiB, whatever the architecture.
-const PAGE_SIZE: usize = 4096;
+pub const PAGE_SIZE: usize = 4096;
 
 /// Size of the heap available from the start, before boot services are
 /// exited and the rest of memory is added by [`install_memory_map`].
