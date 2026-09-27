@@ -1,4 +1,4 @@
-use talc::{source::Claim, TalcLock};
+use talc::{TalcLock, source::Claim};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 
 /// UEFI memory map pages are always 4 KiB, whatever the architecture.
@@ -36,6 +36,8 @@ pub unsafe fn install_memory_map(memory_map: MemoryMapOwned) {
     for region in conventional {
         let base = region.phys_start as *mut u8;
         let size = region.page_count as usize * PAGE_SIZE;
-        ALLOCATOR.lock().claim(base, size).unwrap();
+        // SAFETY: The caller guarantees the conventional regions are free,
+        // so nothing else uses this memory while the allocator owns it.
+        unsafe { ALLOCATOR.lock().claim(base, size) }.unwrap();
     }
 }

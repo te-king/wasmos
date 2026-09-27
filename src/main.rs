@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 
 // QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is

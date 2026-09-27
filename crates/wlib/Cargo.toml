@@ -2,7 +2,7 @@
 name = "wlib"
 description = "A standard library for wasmos."
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 wasmos-abi = { path = "../abi" }

@@ -2,7 +2,7 @@
 name = "wshell"
 description = "A simple shell written in Rust for the wasmos kernel."
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 wlib = { path = "../wlib" }

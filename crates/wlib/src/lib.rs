@@ -5,7 +5,7 @@ use wasmos_abi as abi;
 /// Raw host imports. Prefer the safe wrappers in the crate root.
 pub mod sys {
     #[link(wasm_import_module = "host")]
-    extern "C" {
+    unsafe extern "C" {
         /// Writes `len` bytes of UTF-8 text starting at `ptr` to the kernel
         /// log. The kernel traps the guest if the range is out of bounds or
         /// isn't valid UTF-8.
