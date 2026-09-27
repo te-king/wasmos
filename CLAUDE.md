@@ -57,12 +57,13 @@ The order is load-bearing, so it is enforced with typestates. Each stage is a ze
 let firmware = unsafe { boot::BootServices::start() };
 let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
 let trampoline = Trampoline::reserve(&firmware); // a page below 1 MiB, also needs boot services
-let interrupts = firmware
-    .exit()               // exit boot services, serial log, memory map -> allocator
+let clock = firmware
+    .exit()               // exit boot services, mask legacy PIC, serial log, memory map -> allocator
     .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
-    .enable_interrupts(); // IDT, mask legacy PIC, enable LAPIC (starts the timer), sti
+    .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
+    .start_clock();       // BSP only: its LAPIC timer drives `timer`
 report(executor::block_on(async {
-    smp::start(&interrupts, processors, trampoline, ap_main).await?; // times IPIs in ticks
+    smp::start(&clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
     kernel_main().await?;
     ..
 }))
@@ -71,15 +72,15 @@ report(executor::block_on(async {
 - Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
 - `report` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
-- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it for boot code (the IDT is only loaded after `init_cpu`). Application processors will need the same guarantee.
+- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
+- Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
 
 ### Application processors (`smp.rs`, `trampoline.rs`)
-- The long-term goal is for every processor to join an async executor on startup. For now each one logs `cpu N: online` in `ap_main` and halts with interrupts disabled.
+- The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
-- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh 256 KiB stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(id)`.
+- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh 256 KiB stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(heap, id)`.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
 - `smp::start` is async. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. A processor that doesn't arrive within about a second fails the boot, and after that the trampoline must not be prepared again, since the processor might still turn up.
-- Application processors don't run `init_cpu` yet, so they have no per-CPU block, no IDT and their local APIC is still disabled.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
@@ -89,7 +90,7 @@ report(executor::block_on(async {
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
-- `timer::ticks()` is a single-consumer `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). Fan-out to many waiters belongs in a task that owns the stream.
+- `timer::ticks()` is a single-consumer `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
 - `executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
 - Its waker only sets a static flag, so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
 - A wake from another processor won't interrupt a halted one. Once other processors run tasks, that needs an IPI.

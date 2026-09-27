@@ -15,7 +15,7 @@ use uefi::{
 };
 
 use super::{
-    boot::{BootServices, Interrupts},
+    boot::{BootServices, Clock, Heap},
     int,
     trampoline::Trampoline,
 };
@@ -175,14 +175,14 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
 }
 
 /// Starts every enabled application processor, one at a time, each running
-/// `main` with its logical index.
+/// `main` with its first boot stage and logical index.
 ///
-/// Needs interrupts, since the delays between IPIs are timed in ticks.
+/// Needs the clock, since the delays between IPIs are timed in ticks.
 pub async fn start(
-    _: &Interrupts,
+    _: &Clock,
     processors: &Processors,
     mut trampoline: Trampoline,
-    main: fn(u32) -> !,
+    main: fn(Heap, u32) -> !,
 ) -> Result<(), StartError> {
     let mut ticks = timer::ticks().expect("nothing else is using the timer yet");
     let enabled = (1..)
@@ -203,7 +203,7 @@ async fn start_one(
     trampoline: &mut Trampoline,
     id: u32,
     ap: &Processor,
-    main: fn(u32) -> !,
+    main: fn(Heap, u32) -> !,
 ) -> Result<(), StartError> {
     let apic_id = ap.apic_id;
     let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;

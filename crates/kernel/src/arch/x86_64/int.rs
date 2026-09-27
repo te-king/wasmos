@@ -39,13 +39,31 @@ pub unsafe fn local_apic() -> LocalApic {
         .unwrap()
 }
 
-/// Enables the current processor's local APIC, which also starts its timer.
+/// Enables the current processor's local APIC, with its timer stopped.
 ///
 /// # Safety
 /// The processor's per-CPU block must exist and the interrupt table must be
 /// loaded, since interrupts can arrive as soon as the APIC is enabled.
 pub unsafe fn install_local_apic() {
-    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().enable() });
+    cpu::with(|cpu| {
+        let mut lapic = cpu.lapic.borrow_mut();
+        // SAFETY: The caller guarantees interrupts can be handled.
+        unsafe {
+            // `enable` also starts the timer, on application processors
+            // too, but only the clock's processor may run it.
+            lapic.enable();
+            lapic.disable_timer();
+        }
+    });
+}
+
+/// Starts the current processor's local APIC timer.
+///
+/// # Safety
+/// The local APIC must be enabled, by [`install_local_apic`].
+pub unsafe fn start_timer() {
+    // SAFETY: The caller guarantees the timer's interrupts can be handled.
+    cpu::with(|cpu| unsafe { cpu.lapic.borrow_mut().enable_timer() });
 }
 
 /// A processor's address for inter-processor interrupts, in the form that

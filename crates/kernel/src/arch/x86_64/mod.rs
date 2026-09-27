@@ -51,7 +51,11 @@ fn main() -> Status {
     let firmware = unsafe { boot::BootServices::start() };
     let processors = smp::discover(&firmware);
     let trampoline = trampoline::Trampoline::reserve(&firmware);
-    let interrupts = firmware.exit().init_cpu(0).enable_interrupts();
+    let clock = firmware
+        .exit()
+        .init_cpu(0)
+        .enable_interrupts()
+        .start_clock();
 
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
@@ -69,7 +73,7 @@ fn main() -> Status {
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
-            smp::start(&interrupts, processors, trampoline, ap_main).await?;
+            smp::start(&clock, processors, trampoline, ap_main).await?;
         }
         kernel_main().await?;
         Ok::<_, Box<dyn Error>>(())
@@ -77,9 +81,10 @@ fn main() -> Status {
 }
 
 /// Where each application processor goes once it has entered the kernel.
-fn ap_main(id: u32) -> ! {
-    logln!("cpu {}: online", id);
-    // Interrupts are still disabled, so this sleeps for good.
+fn ap_main(heap: boot::Heap, id: u32) -> ! {
+    let _interrupts = heap.init_cpu(id).enable_interrupts();
+    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+    // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();
     }
