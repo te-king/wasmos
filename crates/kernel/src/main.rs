@@ -1,4 +1,4 @@
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 #![no_main]
 #![no_std]
 
@@ -9,13 +9,10 @@ use alloc::vec::Vec;
 use futures_util::{future::join, StreamExt};
 use wasmi::{Engine, Error, Module, Store};
 
-#[path = "arch/x86_64/mod.rs"]
 mod arch;
-
 mod executor;
 mod host;
 mod log;
-mod qemu;
 mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));

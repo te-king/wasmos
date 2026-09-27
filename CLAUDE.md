@@ -44,6 +44,12 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 - **Guest ABI:** `crates/abi` (`wasmos-abi`) holds the import module name, host function names and guest entry point as constants. The kernel defines host functions in `crates/kernel/src/host.rs` using them. `wlib` must use string literals in its import attributes, so it checks them against the constants with compile-time `assert!`s: renaming one side without the other fails the build. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
 - `x86_64-unknown-uefi` is a Windows-style (COFF) target: `#[thread_local]` fails to link (`_tls_index`), which is why per-CPU data uses the GS base instead.
 
+### Architecture layer (`crates/kernel/src/arch/`)
+- `arch/mod.rs` picks the architecture module with `#[cfg(target_arch)]` and re-exports the only interface the rest of the kernel may use: `Console` (the log's serial port type), `without_interrupts`, `disable_interrupts` and `wait_for_interrupt` (the executor's idle).
+- Code outside `arch/` must not use `x86_64`, `x2apic` or other architecture crates directly. Those are `cfg(target_arch = "x86_64")` dependencies in `crates/kernel/Cargo.toml`. If neutral code needs something new, add it to the interface.
+- Each architecture module owns its entry point, boot sequence, interrupt handling, panic handler and emulator exit (`arch/x86_64/qemu.rs`).
+- aarch64 is planned: `arch/aarch64/mod.rs` is a placeholder. Building for another target currently stops at a `compile_error!` in `arch/mod.rs`, after all the portable dependencies have compiled.
+
 ### Boot sequence (`crates/kernel/src/arch/x86_64/boot.rs`, `mod.rs`)
 The order is load-bearing, so it is enforced with typestates. Each stage is a zero-sized token that only the previous stage can produce, and each transition consumes it:
 
