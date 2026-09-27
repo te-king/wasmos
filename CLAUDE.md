@@ -15,7 +15,7 @@ cargo run --release        # wasmi uses a different dispatch loop when optimised
 WASMOS_TIMEOUT=10 cargo run  # QEMU is killed after N seconds (default 60, 0 = no limit)
 ```
 
-`cargo run` exits 0 only if the kernel wrote `QemuExitCode::Success` to the isa-debug-exit port. It fails if the kernel reports failure (including any panic), if QEMU exits some other way, or on timeout.
+`cargo run` exits 0 only if the kernel wrote `QemuExitCode::Success` to the isa-debug-exit port. It fails if the kernel reports failure (including any panic), if QEMU exits some other way, or on timeout. QEMU runs with `-no-reboot`, so a triple fault on any processor ends the run straight away ("the machine reset or shut down") instead of rebooting in a loop until the timeout.
 
 Lint and format. The kernel and the wasm crates must be checked against their own targets. CI runs all of these and fails on any warning:
 
@@ -38,7 +38,7 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 ## Architecture
 
 ### Workspace and build pipeline
-- The root package (`src/main.rs`, `build.rs`) is the **host runner**, not the kernel. `build.rs` receives the kernel's `.efi` path through a cargo artifact dependency (`bindeps`, enabled in `.cargo/config.toml`). The runner copies it to `EFI/BOOT/BOOTX64.EFI` on a temporary FAT drive and boots QEMU with `-smp 4` and OVMF as read-only pflash.
+- The root package (`src/main.rs`, `build.rs`) is the **host runner**, not the kernel. `build.rs` receives the kernel's `.efi` path through a cargo artifact dependency (`bindeps`, enabled in `.cargo/config.toml`). The runner copies it to `EFI/BOOT/BOOTX64.EFI` on a temporary FAT drive and boots QEMU with `-smp 4`, `-no-reboot` and OVMF as read-only pflash.
 - `crates/kernel` is the UEFI kernel (`x86_64-unknown-uefi`, `no_std`). It depends on `crates/wshell` as a `wasm32-unknown-unknown` artifact and embeds it with `include_bytes!`.
 - `crates/wshell` is the first guest program. `crates/wlib` is the guest-side standard library: raw host imports in `wlib::sys`, safe wrappers (`wlib::print`) and the `print!`/`println!` macros.
 - **Guest ABI:** `crates/abi` (`wasmos-abi`) holds the import module name, host function names and guest entry point as constants. The kernel defines host functions in `crates/kernel/src/host.rs` using them. `wlib` must use string literals in its import attributes, so it checks them against the constants with compile-time `assert!`s: renaming one side without the other fails the build. Host functions must turn bad guest input into a wasm trap (`Err(wasmi::Error)`), never a kernel panic.
