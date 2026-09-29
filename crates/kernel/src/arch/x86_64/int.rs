@@ -13,11 +13,19 @@ use x86_64::{
 use super::{cpu::Local, exception};
 use crate::logln;
 
+/// The local APIC's interrupts, by vector.
+#[derive(Clone, Copy)]
 #[repr(u8)]
 enum InterruptIndex {
     Timer = 32,
     Error = 33,
     Spurious = 34,
+}
+
+impl InterruptIndex {
+    const fn vector(self) -> u8 {
+        self as u8
+    }
 }
 
 /// Builds a handle to the current processor's local APIC, which controls
@@ -31,9 +39,9 @@ pub unsafe fn local_apic() -> LocalApic {
     // SAFETY: The caller guarantees kernel mode on the target processor.
     let xapic_base = unsafe { xapic_base() };
     LocalApicBuilder::new()
-        .timer_vector(InterruptIndex::Timer as usize)
-        .error_vector(InterruptIndex::Error as usize)
-        .spurious_vector(InterruptIndex::Spurious as usize)
+        .timer_vector(InterruptIndex::Timer.vector().into())
+        .error_vector(InterruptIndex::Error.vector().into())
+        .spurious_vector(InterruptIndex::Spurious.vector().into())
         .set_xapic_base(xapic_base)
         .build()
         .unwrap()
@@ -133,9 +141,12 @@ pub unsafe fn disable_legacy_pic() {
 /// local APIC's interrupts.
 static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = exception::table();
-    exception::gate(&mut idt[InterruptIndex::Timer as u8], timer_handler);
-    exception::gate(&mut idt[InterruptIndex::Error as u8], error_handler);
-    exception::gate(&mut idt[InterruptIndex::Spurious as u8], spurious_handler);
+    exception::gate(&mut idt[InterruptIndex::Timer.vector()], timer_handler);
+    exception::gate(&mut idt[InterruptIndex::Error.vector()], error_handler);
+    exception::gate(
+        &mut idt[InterruptIndex::Spurious.vector()],
+        spurious_handler,
+    );
     idt
 });
 
