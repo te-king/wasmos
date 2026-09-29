@@ -63,9 +63,9 @@ firmware
     .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
 // in bsp_main:
 let mut clock = heap
-    .init_cpu(0)          // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
+    .init_cpu()           // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
-    .start_clock();       // BSP only: its LAPIC timer drives `timer`
+    .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
 finish(executor::block_on(async {
     smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
     kernel_main(&mut clock).await?;
@@ -79,7 +79,7 @@ finish(executor::block_on(async {
 - `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
 - The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 340 KiB of stack, so staying on it silently corrupted the heap.
 - Stacks (`stack.rs`) are 1 MiB (`KERNEL_SIZE`) on every processor. `stack::leak` returns a `Top`, which isn't `Copy`, so each stack has one user, and `stack::run_on` can safely switch to it. Nothing guards their bottoms yet: that needs the kernel to own the page tables, which OVMF maps read-only.
-- Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
+- Tokens carry a role, `Bsp` or `Ap`. `exit()` gives `Heap<Bsp>`; application processors run the same chain from `Heap<Ap>` to `Interrupts<Ap>`, started after `exit()`, so `trampoline::enter` makes their token (`Heap::application_processor(id)`, unsafe) and passes it to `ap_main`. The role holds the processor's `CpuId` (the BSP is `CpuId::BSP`), so `init_cpu` takes no argument. BSP-only steps exist only for `Bsp`: `on_kernel_stack` on `Heap<Bsp>`, `start_clock` on `Interrupts<Bsp>`, so an AP can't reach `Clock` at all.
 
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.

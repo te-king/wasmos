@@ -63,16 +63,14 @@ fn main() -> Status {
 
 /// Where the bootstrap processor goes once it has left the firmware.
 fn bsp_main(
-    heap: boot::Heap,
+    heap: boot::Heap<boot::Bsp>,
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let mut clock = heap
-        .init_cpu(cpu::CpuId::BSP)
-        .enable_interrupts()
-        .start_clock();
+    let interrupts = heap.init_cpu().enable_interrupts();
+    logln!("cpu {}: online", interrupts.id());
+    let mut clock = interrupts.start_clock();
 
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
         Ok(processors) => {
             logln!("smp: {processors}");
@@ -96,9 +94,9 @@ fn bsp_main(
 }
 
 /// Where each application processor goes once it has entered the kernel.
-fn ap_main(heap: boot::Heap, id: cpu::CpuId) -> ! {
-    let _interrupts = heap.init_cpu(id).enable_interrupts();
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+fn ap_main(heap: boot::Heap<boot::Ap>) -> ! {
+    let interrupts = heap.init_cpu().enable_interrupts();
+    logln!("cpu {}: online", interrupts.id());
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();
