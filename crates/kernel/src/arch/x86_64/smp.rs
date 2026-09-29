@@ -39,17 +39,16 @@ pub struct Processor {
 }
 
 /// The processors found at boot. There is always exactly one bootstrap
-/// processor, and it comes first, so a processor's position in [`iter`]
-/// is its logical index (the one passed to `cpu::init`).
-///
-/// [`iter`]: Processors::iter
+/// processor, and it comes first, so a processor's position is its id.
 #[derive(Clone, Debug)]
 pub struct Processors {
     pub bsp: Processor,
     pub aps: Vec<Processor>,
-    /// How many processors the firmware reported as enabled.
-    pub enabled: usize,
 }
+
+/// The processors as log lines: a summary, then one per processor, marking
+/// the bootstrap processor.
+pub struct Listing<'a>(pub &'a Processors);
 
 /// Why processor discovery failed.
 #[derive(Debug)]
@@ -72,9 +71,22 @@ pub enum StartError {
 }
 
 impl Processors {
-    /// All processors, bootstrap processor first.
-    pub fn iter(&self) -> impl Iterator<Item = &Processor> {
-        iter::once(&self.bsp).chain(&self.aps)
+    /// All processors, bootstrap processor first, with their ids.
+    pub fn iter(&self) -> impl Iterator<Item = (CpuId, &Processor)> {
+        (0..)
+            .map(CpuId::nth)
+            .zip(iter::once(&self.bsp).chain(&self.aps))
+    }
+
+    /// The application processors the kernel can start, with their ids.
+    pub fn startable(&self) -> impl Iterator<Item = (CpuId, &Processor)> {
+        self.iter()
+            .filter(|&(id, ap)| id != CpuId::BSP && ap.is_enabled && ap.is_healthy)
+    }
+
+    /// How many processors are enabled.
+    pub fn enabled(&self) -> usize {
+        self.iter().filter(|(_, cpu)| cpu.is_enabled).count()
     }
 }
 
@@ -117,7 +129,17 @@ impl fmt::Display for Processors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = 1 + self.aps.len();
         let plural = if total == 1 { "" } else { "s" };
-        write!(f, "{total} processor{plural}, {} enabled", self.enabled)
+        write!(f, "{total} processor{plural}, {} enabled", self.enabled())
+    }
+}
+
+impl fmt::Display for Listing<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "smp: {}", self.0)?;
+        self.0.iter().try_for_each(|(id, cpu)| {
+            let role = if id == CpuId::BSP { " (bsp)" } else { "" };
+            writeln!(f, "smp: cpu {id}{role}: {cpu}")
+        })
     }
 }
 
@@ -173,7 +195,6 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
     Ok(Processors {
         bsp: bsp.into(),
         aps: aps.into_iter().map(Processor::from).collect(),
-        enabled: count.enabled,
     })
 }
 
@@ -188,12 +209,8 @@ pub async fn start(
     main: fn(Heap<Ap>) -> !,
 ) -> Result<(), StartError> {
     let local = clock.local();
-    let enabled = (1..)
-        .map(CpuId::nth)
-        .zip(&processors.aps)
-        .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
     // Each start hands the trampoline and the tick stream on to the next.
-    stream::iter(enabled)
+    stream::iter(processors.startable())
         .map(Ok)
         .try_fold(
             (trampoline, timer::ticks(clock)),

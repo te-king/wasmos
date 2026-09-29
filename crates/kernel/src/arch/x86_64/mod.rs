@@ -4,7 +4,7 @@ use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
-use crate::{executor::Executor, kernel_main, logln};
+use crate::{executor::Executor, kernel_main, log, logln};
 
 mod boot;
 mod cpu;
@@ -71,13 +71,7 @@ fn bsp_main(
     let mut clock = interrupts.start_clock();
 
     match &processors {
-        Ok(processors) => {
-            logln!("smp: {processors}");
-            for (id, cpu) in processors.iter().enumerate() {
-                let role = if id == 0 { " (bsp)" } else { "" };
-                logln!("smp: cpu {id}{role}: {cpu}");
-            }
-        }
+        Ok(processors) => log!("{}", smp::Listing(processors)),
         Err(err) => logln!("smp: {err}"),
     }
 
