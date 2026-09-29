@@ -15,7 +15,7 @@ use x86_64::{
 };
 
 use super::{
-    cpu,
+    cpu::Local,
     gdt::{self, InterruptStack},
 };
 use crate::logln;
@@ -34,7 +34,10 @@ enum Cause {
     /// and table faults it's the selector involved.
     ErrorCode(u64),
     /// The address the processor failed to access (CR2), and why.
-    PageFault(u64, PageFaultErrorCode),
+    PageFault {
+        address: u64,
+        code: PageFaultErrorCode,
+    },
     /// A double fault's error code is always zero, but CR2 still holds the
     /// last page fault's address, which is the culprit when the double
     /// fault came from overflowing a stack.
@@ -50,7 +53,9 @@ impl fmt::Display for Fault {
         match self.cause {
             Cause::Unknown => Ok(()),
             Cause::ErrorCode(code) => write!(f, ", error code {code:#x}"),
-            Cause::PageFault(address, code) => write!(f, ", accessing {address:#x} ({code:?})"),
+            Cause::PageFault { address, code } => {
+                write!(f, ", accessing {address:#x} ({code:?})")
+            }
             Cause::DoubleFault { last_page_fault } => {
                 write!(f, ", last page fault at {last_page_fault:#x}")
             }
@@ -61,54 +66,97 @@ impl fmt::Display for Fault {
 
 /// Panics with `fault`, naming the processor it happened on.
 fn fatal(fault: Fault) -> ! {
-    // The interrupt table is only loaded after `cpu::init` (it takes the
-    // `PerCpu` token), so any exception that gets here can use `cpu::with`.
-    let id = cpu::with(|cpu| cpu.id);
+    // SAFETY: The interrupt table is only loaded after `cpu::init`
+    // (`enable_interrupts` takes the `PerCpu` token).
+    let id = unsafe { Local::assume() }.id();
     panic!("cpu {id}: {fault}")
 }
 
-/// Defines handlers that panic with a [`Fault`], for exceptions whose
-/// handlers take an error code (`with code`) or don't.
-macro_rules! fatal_handlers {
-    ($($handler:ident: $name:literal),* $(,)?) => {$(
-        extern "x86-interrupt" fn $handler(frame: InterruptStackFrame) {
-            fatal(Fault { name: $name, frame, cause: Cause::Unknown })
+/// Defines the interrupt table from one list of every exception, in table
+/// order. Each names its table entry and handler (they share a name), how
+/// the handler comes about, and optionally the interrupt stack it runs on:
+///
+/// - `fatal entry: "name"`: generated, panicking with a [`Fault`].
+/// - `fatal_code entry: "name"`: the same, for an exception with an error
+///   code.
+/// - `custom entry`: written out below.
+macro_rules! exceptions {
+    ($($kind:ident $entry:ident $(: $name:literal)? $(on $stack:ident)?,)*) => {
+        $(exception_handler!($kind $entry $($name)?);)*
+
+        /// An interrupt table with a handler for every exception.
+        pub fn table() -> InterruptDescriptorTable {
+            let mut idt = InterruptDescriptorTable::new();
+            $(set_gate!(idt, $entry $(, $stack)?);)*
+            idt
         }
-    )*};
-    (with code $($handler:ident: $name:literal),* $(,)?) => {$(
-        extern "x86-interrupt" fn $handler(frame: InterruptStackFrame, code: u64) {
-            fatal(Fault { name: $name, frame, cause: Cause::ErrorCode(code) })
-        }
-    )*};
+    };
 }
 
-fatal_handlers! {
-    divide_error: "divide error",
-    debug: "debug exception",
-    non_maskable_interrupt: "non-maskable interrupt",
-    overflow: "overflow",
-    bound_range_exceeded: "bound range exceeded",
-    invalid_opcode: "invalid opcode",
-    device_not_available: "device not available",
-    x87_floating_point: "x87 floating-point exception",
-    simd_floating_point: "SIMD floating-point exception",
-    virtualization: "virtualization exception",
-    hv_injection_exception: "hypervisor injection exception",
+/// One exception's handler, for [`exceptions!`].
+macro_rules! exception_handler {
+    (fatal $entry:ident $name:literal) => {
+        extern "x86-interrupt" fn $entry(frame: InterruptStackFrame) {
+            fatal(Fault {
+                name: $name,
+                frame,
+                cause: Cause::Unknown,
+            })
+        }
+    };
+    (fatal_code $entry:ident $name:literal) => {
+        extern "x86-interrupt" fn $entry(frame: InterruptStackFrame, code: u64) {
+            fatal(Fault {
+                name: $name,
+                frame,
+                cause: Cause::ErrorCode(code),
+            })
+        }
+    };
+    (custom $entry:ident) => {};
 }
 
-fatal_handlers! { with code
-    invalid_tss: "invalid TSS",
-    segment_not_present: "segment not present",
-    stack_segment_fault: "stack-segment fault",
-    general_protection_fault: "general protection fault",
-    alignment_check: "alignment check",
-    cp_protection_exception: "control protection exception",
-    vmm_communication_exception: "VMM communication exception",
-    security_exception: "security exception",
+/// One entry of the interrupt table, for [`exceptions!`].
+macro_rules! set_gate {
+    ($idt:ident, $entry:ident) => {
+        gate(&mut $idt.$entry, $entry)
+    };
+    ($idt:ident, $entry:ident, $stack:ident) => {
+        gate_on(&mut $idt.$entry, $entry, InterruptStack::$stack)
+    };
+}
+
+exceptions! {
+    fatal divide_error: "divide error",
+    fatal debug: "debug exception",
+    fatal non_maskable_interrupt: "non-maskable interrupt" on NonMaskable,
+    custom breakpoint,
+    fatal overflow: "overflow",
+    fatal bound_range_exceeded: "bound range exceeded",
+    fatal invalid_opcode: "invalid opcode",
+    fatal device_not_available: "device not available",
+    custom double_fault on DoubleFault,
+    fatal_code invalid_tss: "invalid TSS",
+    fatal_code segment_not_present: "segment not present",
+    fatal_code stack_segment_fault: "stack-segment fault",
+    fatal_code general_protection_fault: "general protection fault",
+    custom page_fault,
+    fatal x87_floating_point: "x87 floating-point exception",
+    fatal_code alignment_check: "alignment check",
+    custom machine_check on MachineCheck,
+    fatal simd_floating_point: "SIMD floating-point exception",
+    fatal virtualization: "virtualization exception",
+    fatal_code cp_protection_exception: "control protection exception",
+    fatal hv_injection_exception: "hypervisor injection exception",
+    fatal_code vmm_communication_exception: "VMM communication exception",
+    fatal_code security_exception: "security exception",
 }
 
 extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    let cause = Cause::PageFault(Cr2::read_raw(), code);
+    let cause = Cause::PageFault {
+        address: Cr2::read_raw(),
+        code,
+    };
     fatal(Fault {
         name: "page fault",
         frame,
@@ -155,48 +203,4 @@ fn gate_on<F: HandlerFuncType>(entry: &mut Entry<F>, handler: F, stack: Interrup
     // SAFETY: Each `InterruptStack` serves one exception, which doesn't
     // nest, so the handler never finds its stack in use.
     unsafe { gate(entry, handler).set_stack_index(stack.index()) };
-}
-
-/// An interrupt table with a handler for every exception.
-pub fn table() -> InterruptDescriptorTable {
-    let mut idt = InterruptDescriptorTable::new();
-    gate(&mut idt.divide_error, divide_error);
-    gate(&mut idt.debug, debug);
-    gate_on(
-        &mut idt.non_maskable_interrupt,
-        non_maskable_interrupt,
-        InterruptStack::NonMaskable,
-    );
-    gate(&mut idt.breakpoint, breakpoint);
-    gate(&mut idt.overflow, overflow);
-    gate(&mut idt.bound_range_exceeded, bound_range_exceeded);
-    gate(&mut idt.invalid_opcode, invalid_opcode);
-    gate(&mut idt.device_not_available, device_not_available);
-    gate_on(
-        &mut idt.double_fault,
-        double_fault,
-        InterruptStack::DoubleFault,
-    );
-    gate(&mut idt.invalid_tss, invalid_tss);
-    gate(&mut idt.segment_not_present, segment_not_present);
-    gate(&mut idt.stack_segment_fault, stack_segment_fault);
-    gate(&mut idt.general_protection_fault, general_protection_fault);
-    gate(&mut idt.page_fault, page_fault);
-    gate(&mut idt.x87_floating_point, x87_floating_point);
-    gate(&mut idt.alignment_check, alignment_check);
-    gate_on(
-        &mut idt.machine_check,
-        machine_check,
-        InterruptStack::MachineCheck,
-    );
-    gate(&mut idt.simd_floating_point, simd_floating_point);
-    gate(&mut idt.virtualization, virtualization);
-    gate(&mut idt.cp_protection_exception, cp_protection_exception);
-    gate(&mut idt.hv_injection_exception, hv_injection_exception);
-    gate(
-        &mut idt.vmm_communication_exception,
-        vmm_communication_exception,
-    );
-    gate(&mut idt.security_exception, security_exception);
-    idt
 }

@@ -8,14 +8,15 @@
 use alloc::vec::Vec;
 use core::{error, fmt, future, iter};
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use uefi::{
     boot,
     proto::pi::mp::{MpServices, ProcessorInformation},
 };
 
 use super::{
-    boot::{BootServices, Clock, Heap},
+    boot::{Ap, BootServices, Clock, Heap},
+    cpu::{CpuId, Local},
     int,
     trampoline::Trampoline,
 };
@@ -38,17 +39,16 @@ pub struct Processor {
 }
 
 /// The processors found at boot. There is always exactly one bootstrap
-/// processor, and it comes first, so a processor's position in [`iter`]
-/// is its logical index (the one passed to `cpu::init`).
-///
-/// [`iter`]: Processors::iter
+/// processor, and it comes first, so a processor's position is its id.
 #[derive(Clone, Debug)]
 pub struct Processors {
     pub bsp: Processor,
     pub aps: Vec<Processor>,
-    /// How many processors the firmware reported as enabled.
-    pub enabled: usize,
 }
+
+/// The processors as log lines: a summary, then one per processor, marking
+/// the bootstrap processor.
+pub struct Listing<'a>(pub &'a Processors);
 
 /// Why processor discovery failed.
 #[derive(Debug)]
@@ -65,15 +65,28 @@ pub enum StartError {
     /// No page below 1 MiB was free for the trampoline.
     Trampoline(uefi::Error),
     /// The local APIC can't address the processor in its current mode.
-    Unaddressable { id: u32, apic_id: u64 },
+    Unaddressable { id: CpuId, apic_id: u64 },
     /// The processor didn't enter the kernel in time.
-    Timeout { id: u32, apic_id: u64 },
+    Timeout { id: CpuId, apic_id: u64 },
 }
 
 impl Processors {
-    /// All processors, bootstrap processor first.
-    pub fn iter(&self) -> impl Iterator<Item = &Processor> {
-        iter::once(&self.bsp).chain(&self.aps)
+    /// All processors, bootstrap processor first, with their ids.
+    pub fn iter(&self) -> impl Iterator<Item = (CpuId, &Processor)> {
+        (0..)
+            .map(CpuId::nth)
+            .zip(iter::once(&self.bsp).chain(&self.aps))
+    }
+
+    /// The application processors the kernel can start, with their ids.
+    pub fn startable(&self) -> impl Iterator<Item = (CpuId, &Processor)> {
+        self.iter()
+            .filter(|&(id, ap)| id != CpuId::BSP && ap.is_enabled && ap.is_healthy)
+    }
+
+    /// How many processors are enabled.
+    pub fn enabled(&self) -> usize {
+        self.iter().filter(|(_, cpu)| cpu.is_enabled).count()
     }
 }
 
@@ -116,7 +129,17 @@ impl fmt::Display for Processors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = 1 + self.aps.len();
         let plural = if total == 1 { "" } else { "s" };
-        write!(f, "{total} processor{plural}, {} enabled", self.enabled)
+        write!(f, "{total} processor{plural}, {} enabled", self.enabled())
+    }
+}
+
+impl fmt::Display for Listing<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "smp: {}", self.0)?;
+        self.0.iter().try_for_each(|(id, cpu)| {
+            let role = if id == CpuId::BSP { " (bsp)" } else { "" };
+            writeln!(f, "smp: cpu {id}{role}: {cpu}")
+        })
     }
 }
 
@@ -172,60 +195,63 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
     Ok(Processors {
         bsp: bsp.into(),
         aps: aps.into_iter().map(Processor::from).collect(),
-        enabled: count.enabled,
     })
 }
 
 /// Starts every enabled application processor, one at a time, each running
-/// `main` with its first boot stage and logical index.
+/// `main` with its first boot stage, which carries its id.
 ///
 /// Needs the clock, since the delays between IPIs are timed in ticks.
 pub async fn start(
     clock: &mut Clock,
     processors: &Processors,
-    mut trampoline: Trampoline,
-    main: fn(Heap, u32) -> !,
+    trampoline: Trampoline,
+    main: fn(Heap<Ap>) -> !,
 ) -> Result<(), StartError> {
-    let mut ticks = timer::ticks(clock);
-    let enabled = (1..)
-        .zip(&processors.aps)
-        .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
-    for (id, ap) in enabled {
-        start_one(&mut ticks, &mut trampoline, id, ap, main).await?;
-    }
-    Ok(())
+    let local = clock.local();
+    // Each start hands the trampoline and the tick stream on to the next.
+    stream::iter(processors.startable())
+        .map(Ok)
+        .try_fold(
+            (trampoline, timer::ticks(clock)),
+            |(trampoline, mut ticks), (id, ap)| async move {
+                let trampoline = start_one(local, &mut ticks, trampoline, id, ap, main).await?;
+                Ok((trampoline, ticks))
+            },
+        )
+        .await
+        .map(drop)
 }
 
-/// Starts one processor with the INIT, startup, startup IPI sequence.
-///
-/// On a timeout, the trampoline must not be prepared again: the processor
-/// might still arrive and read its handoff.
+/// Starts one processor with the INIT, startup, startup IPI sequence, and
+/// gives the trampoline back once the processor has let go of it.
 async fn start_one(
+    local: Local,
     ticks: &mut Ticks<'_>,
-    trampoline: &mut Trampoline,
-    id: u32,
+    trampoline: Trampoline,
+    id: CpuId,
     ap: &Processor,
-    main: fn(Heap, u32) -> !,
-) -> Result<(), StartError> {
+    main: fn(Heap<Ap>) -> !,
+) -> Result<Trampoline, StartError> {
     let apic_id = ap.apic_id;
     let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;
-    trampoline.prepare(id, main);
+    let launch = trampoline.launch(id, main);
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
-    unsafe { int::send_init(dest) };
+    unsafe { int::send_init(local, dest) };
     // Intel asks for 10 ms here, about one timer period.
     sleep(ticks, 1).await;
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for periods in [1, START_TIMEOUT] {
-        // SAFETY: `prepare` put the trampoline in the page at `vector`.
-        unsafe { int::send_startup(dest, trampoline.vector()) };
-        if wait_until(ticks, periods, || trampoline.arrived()).await {
-            return Ok(());
+        // SAFETY: `launch` put the trampoline in the page at `vector`.
+        unsafe { int::send_startup(local, dest, launch.vector()) };
+        if wait_until(ticks, periods, || launch.arrived()).await {
+            break;
         }
     }
-    Err(StartError::Timeout { id, apic_id })
+    launch.land().ok_or(StartError::Timeout { id, apic_id })
 }
 
 /// Waits for at least `periods` full timer periods.

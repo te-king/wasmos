@@ -1,22 +1,25 @@
-use core::{cell::OnceCell, fmt::Write};
+use core::fmt::{Arguments, Write};
+
+use spin::{Mutex, Once};
 
 use crate::arch::{self, Console};
 
-static STDIO_PORT: spin::Mutex<OnceCell<Console>> = spin::Mutex::new(OnceCell::new());
+/// The kernel log's port: installed once, then locked for each write.
+static STDIO_PORT: Once<Mutex<Console>> = Once::new();
 
-/// Installs a serial port as the global stdio writer.
+/// Installs a serial port as the kernel log, or hands it back if one is
+/// already installed.
 pub fn install_stdio_port(port: Console) -> Result<(), Console> {
-    STDIO_PORT.lock().set(port)
+    let mut port = Some(port);
+    STDIO_PORT.call_once(|| Mutex::new(port.take().expect("`call_once` runs this at most once")));
+    port.map_or(Ok(()), Err)
 }
 
 #[doc(hidden)]
-pub fn _log(args: core::fmt::Arguments) {
-    arch::without_interrupts(|| {
-        if let Some(writer) = STDIO_PORT.lock().get_mut() {
-            // Logging is best-effort: a failing `Display` impl shouldn't panic.
-            let _ = writer.write_fmt(args);
-        }
-    })
+pub fn _log(args: Arguments) {
+    if let Some(port) = STDIO_PORT.get() {
+        arch::without_interrupts(|| write(port, args));
+    }
 }
 
 /// Logs from the panic handler, even if the log lock is already held.
@@ -24,17 +27,24 @@ pub fn _log(args: core::fmt::Arguments) {
 /// The holder may be this processor, interrupted mid-log by the panic, so
 /// waiting for the lock could hang forever. The kernel is going down, so the
 /// message matters more than the lock: if it's held, it's forced open.
-pub fn log_panic(args: core::fmt::Arguments) {
+pub fn log_panic(args: Arguments) {
     arch::disable_interrupts();
-    if STDIO_PORT.is_locked() {
-        // SAFETY: Nothing runs after the panic handler, so whoever holds the
-        // lock never touches the port again. Another processor holding it
-        // mid-write could interleave output, which is acceptable here.
-        unsafe { STDIO_PORT.force_unlock() };
+    if let Some(port) = STDIO_PORT.get() {
+        if port.is_locked() {
+            // SAFETY: Nothing runs after the panic handler, so whoever holds
+            // the lock never touches the port again. Another processor
+            // holding it mid-write could interleave output, which is
+            // acceptable here.
+            unsafe { port.force_unlock() };
+        }
+        write(port, args);
     }
-    if let Some(writer) = STDIO_PORT.lock().get_mut() {
-        let _ = writer.write_fmt(args);
-    }
+}
+
+/// Writes to the log's port. Logging is best-effort: a failing `Display`
+/// impl shouldn't panic.
+fn write(port: &Mutex<Console>, args: Arguments) {
+    let _ = port.lock().write_fmt(args);
 }
 
 /// Logs a message to the kernel log.

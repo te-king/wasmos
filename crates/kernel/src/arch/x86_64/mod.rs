@@ -1,11 +1,10 @@
-use alloc::boxed::Box;
-use core::{error::Error, fmt::Display};
+use core::fmt::{self, Display};
 
 use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
-use crate::{executor, kernel_main, logln};
+use crate::{executor::Executor, kernel_main, log, logln};
 
 mod boot;
 mod cpu;
@@ -63,39 +62,63 @@ fn main() -> Status {
 
 /// Where the bootstrap processor goes once it has left the firmware.
 fn bsp_main(
-    heap: boot::Heap,
+    heap: boot::Heap<boot::Bsp>,
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let mut clock = heap.init_cpu(0).enable_interrupts().start_clock();
+    let interrupts = heap.init_cpu().enable_interrupts();
+    logln!("cpu {}: online", interrupts.id());
+    let mut clock = interrupts.start_clock();
 
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
-        Ok(processors) => {
-            logln!("smp: {processors}");
-            for (id, cpu) in processors.iter().enumerate() {
-                let role = if id == 0 { " (bsp)" } else { "" };
-                logln!("smp: cpu {id}{role}: {cpu}");
-            }
-        }
+        Ok(processors) => log!("{}", smp::Listing(processors)),
         Err(err) => logln!("smp: {err}"),
     }
 
-    finish(executor::block_on(async {
+    finish(Executor::new().block_on(async {
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
             smp::start(&mut clock, processors, trampoline, ap_main).await?;
         }
         kernel_main(&mut clock).await?;
-        Ok::<_, Box<dyn Error>>(())
+        Ok::<_, KernelError>(())
     }))
 }
 
+/// Why the kernel failed.
+enum KernelError {
+    /// The application processors couldn't all be started.
+    Start(smp::StartError),
+    /// A guest failed, trapping or failing to load.
+    Guest(wasmi::Error),
+}
+
+impl From<smp::StartError> for KernelError {
+    fn from(err: smp::StartError) -> Self {
+        KernelError::Start(err)
+    }
+}
+
+impl From<wasmi::Error> for KernelError {
+    fn from(err: wasmi::Error) -> Self {
+        KernelError::Guest(err)
+    }
+}
+
+impl Display for KernelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KernelError::Start(err) => write!(f, "{err}"),
+            KernelError::Guest(err) => write!(f, "guest: {err}"),
+        }
+    }
+}
+
 /// Where each application processor goes once it has entered the kernel.
-fn ap_main(heap: boot::Heap, id: u32) -> ! {
-    let _interrupts = heap.init_cpu(id).enable_interrupts();
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+fn ap_main(heap: boot::Heap<boot::Ap>) -> ! {
+    let interrupts = heap.init_cpu().enable_interrupts();
+    logln!("cpu {}: online", interrupts.id());
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();
@@ -116,10 +139,16 @@ fn finish(result: Result<(), impl Display>) -> ! {
         }
         Err(err) => {
             logln!("kernel: {err}");
-            qemu::exit_qemu(qemu::QemuExitCode::Failed);
-            halt()
+            fail()
         }
     }
+}
+
+/// Ends the kernel in failure, once the failure has been logged: under QEMU
+/// the debug-exit port ends the emulator, and elsewhere this processor halts.
+fn fail() -> ! {
+    qemu::exit_qemu(qemu::QemuExitCode::Failed);
+    halt()
 }
 
 /// Stops this processor for good.

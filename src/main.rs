@@ -1,10 +1,12 @@
-use std::env::VarError;
+use std::env::{self, VarError};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
+use tempfile::TempDir;
 
 // QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
 // what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
@@ -19,44 +21,65 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const CPUS: &str = "4";
 
 fn main() -> Result<()> {
-    let kernel = std::env!("KERNEL_PATH");
-    let timeout = timeout()?;
-
+    let timeout = timeout(env::var("WASMOS_TIMEOUT"))?;
     let (code, vars) = firmware()?;
+    let drive = boot_drive(Path::new(env!("KERNEL_PATH")))?;
 
-    // Create a temporary directory to store the EFI boot files
+    let mut qemu = Command::new("qemu-system-x86_64")
+        .args(qemu_args(&code, &vars, drive.path()))
+        .spawn()?;
+    let status = wait_with_timeout(&mut qemu, timeout)?;
+
+    drive.close()?;
+    outcome(status.code())
+}
+
+/// A temporary directory laid out as a UEFI boot drive, with `kernel` as
+/// its default boot loader.
+fn boot_drive(kernel: &Path) -> Result<TempDir> {
     let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
-
-    // Create the EFI boot directory
     let efi_boot = dir.path().join("EFI").join("BOOT");
-    std::fs::create_dir_all(&efi_boot)?;
+    fs::create_dir_all(&efi_boot)?;
+    fs::copy(kernel, efi_boot.join("BOOTX64.EFI"))?;
+    Ok(dir)
+}
 
-    // Copy the kernel to the EFI boot directory
-    std::fs::copy(kernel, efi_boot.join("BOOTX64.EFI"))?;
+/// QEMU's arguments for booting the drive in directory `drive`, with the
+/// OVMF images `code` and `vars`.
+fn qemu_args(code: &Path, vars: &Path, drive: &Path) -> Vec<String> {
+    [
+        "-nodefaults",
+        "-display",
+        "none",
+        "-serial",
+        "stdio",
+        "-smp",
+        CPUS,
+        // A reset stops QEMU rather than rebooting into the kernel again. On
+        // a triple fault (on any processor) the kernel can't report
+        // anything, and would otherwise boot in a loop until the timeout.
+        "-no-reboot",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        "-drive".into(),
+        pflash(code),
+        "-drive".into(),
+        pflash(vars),
+        // Writable only because QEMU's IDE disks can't be read-only. The
+        // kernel never writes to it.
+        "-drive".into(),
+        format!("format=raw,file=fat:rw:{}", drive.display()),
+    ])
+    .collect()
+}
 
-    let mut cmd = std::process::Command::new("qemu-system-x86_64");
-    cmd.args(["-nodefaults", "-display", "none", "-serial", "stdio"]);
-    cmd.args(["-smp", CPUS]);
-    // A reset stops QEMU rather than rebooting into the kernel again. On a
-    // triple fault (on any processor) the kernel can't report anything, and
-    // would otherwise boot in a loop until the timeout.
-    cmd.arg("-no-reboot");
-    cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
-    cmd.arg("-drive").arg(pflash(&code));
-    cmd.arg("-drive").arg(pflash(&vars));
-    // Writable only because QEMU's IDE disks can't be read-only. The kernel
-    // never writes to it.
-    cmd.args([
-        "-drive",
-        &format!("format=raw,file=fat:rw:{}", dir.path().display()),
-    ]);
-    let mut child = cmd.spawn()?;
-    let status = wait_with_timeout(&mut child, timeout)?;
-
-    // Clean up the temporary directory
-    dir.close()?;
-
-    match status.code() {
+/// What QEMU's exit status says about the kernel.
+fn outcome(code: Option<i32>) -> Result<()> {
+    match code {
         Some(QEMU_EXIT_SUCCESS) => Ok(()),
         Some(QEMU_EXIT_FAILED) => bail!("kernel reported failure"),
         Some(0) => bail!("the machine reset or shut down, e.g. on a triple fault"),
@@ -70,8 +93,8 @@ fn main() -> Result<()> {
 /// prebuilt, downloaded and verified into `target/ovmf` on first run.
 fn firmware() -> Result<(PathBuf, PathBuf)> {
     match (
-        std::env::var_os("WASMOS_OVMF_CODE"),
-        std::env::var_os("WASMOS_OVMF_VARS"),
+        env::var_os("WASMOS_OVMF_CODE"),
+        env::var_os("WASMOS_OVMF_VARS"),
     ) {
         (Some(code), Some(vars)) => Ok((code.into(), vars.into())),
         (None, None) => {
@@ -94,8 +117,9 @@ fn pflash(path: &Path) -> String {
     format!("if=pflash,format=raw,readonly=on,file={}", path.display())
 }
 
-fn timeout() -> Result<Option<Duration>> {
-    match std::env::var("WASMOS_TIMEOUT") {
+/// The timeout that `var`, the value of `WASMOS_TIMEOUT`, sets.
+fn timeout(var: Result<String, VarError>) -> Result<Option<Duration>> {
+    match var {
         Ok(secs) => {
             let secs: u64 = secs
                 .parse()

@@ -6,7 +6,10 @@
 //! can't stall the rest of the kernel. Only a call to a host function, or
 //! the start function, runs without yielding.
 
-use wasmi::{CompilationMode, Config, Engine, Error, Func, Module, ResumableCall, Store};
+use wasmi::{
+    CompilationMode, Config, Engine, Error, Func, Module, ResumableCall, ResumableCallOutOfFuel,
+    Store,
+};
 
 use crate::{executor, host};
 
@@ -23,18 +26,23 @@ const START_FUEL: u64 = 100 * SLICE;
 /// slices.
 pub async fn run(wasm: &[u8]) -> Result<(), Error> {
     let (mut store, entry) = instantiate(wasm)?;
-    let mut call = entry.call_resumable(&mut store, &[], &mut [])?;
-    loop {
-        call = match call {
-            ResumableCall::Finished => return Ok(()),
-            // Host functions only fail on bad guest input, which traps it.
-            ResumableCall::HostTrap(trap) => return Err(trap.into_host_error()),
-            ResumableCall::OutOfFuel(suspended) => {
-                executor::yield_now().await;
-                store.set_fuel(refill(suspended.required_fuel()))?;
-                suspended.resume(&mut store, &mut [])?
-            }
-        };
+    let mut suspended = suspension(entry.call_resumable(&mut store, &[], &mut [])?)?;
+    while let Some(call) = suspended {
+        executor::yield_now().await;
+        store.set_fuel(refill(call.required_fuel()))?;
+        suspended = suspension(call.resume(&mut store, &mut [])?)?;
+    }
+    Ok(())
+}
+
+/// What's left of `call` to resume: the rest of it once it has run out of
+/// fuel, or nothing once it has finished. Host functions only fail on bad
+/// guest input, which traps the guest.
+fn suspension(call: ResumableCall) -> Result<Option<ResumableCallOutOfFuel>, Error> {
+    match call {
+        ResumableCall::Finished => Ok(None),
+        ResumableCall::HostTrap(trap) => Err(trap.into_host_error()),
+        ResumableCall::OutOfFuel(suspended) => Ok(Some(suspended)),
     }
 }
 

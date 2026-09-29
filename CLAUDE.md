@@ -52,7 +52,7 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 - aarch64 is planned: `arch/aarch64/mod.rs` is a placeholder. Building for another target currently stops at a `compile_error!` in `arch/mod.rs`, after all the portable dependencies have compiled.
 
 ### Boot sequence (`crates/kernel/src/arch/x86_64/boot.rs`, `mod.rs`)
-The order is load-bearing, so it is enforced with typestates. Each stage is a zero-sized token that only the previous stage can produce, and each transition consumes it:
+The order is load-bearing, so it is enforced with typestates. Each stage is a token (zero-sized, apart from an application processor's id) that only the previous stage can produce, and each transition consumes it:
 
 ```rust
 let firmware = unsafe { boot::BootServices::start() };
@@ -63,10 +63,10 @@ firmware
     .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
 // in bsp_main:
 let mut clock = heap
-    .init_cpu(0)          // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
+    .init_cpu()           // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
-    .start_clock();       // BSP only: its LAPIC timer drives `timer`
-finish(executor::block_on(async {
+    .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
+finish(Executor::new().block_on(async {
     smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
     kernel_main(&mut clock).await?;
     ..
@@ -76,34 +76,35 @@ finish(executor::block_on(async {
 - Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
 - `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
-- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
+- Reaching a CPU's block before `cpu::init` on that CPU is undefined behaviour, so safe code can only do it with the `Local` that `init` returns (see Per-CPU data).
 - The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 340 KiB of stack, so staying on it silently corrupted the heap.
 - Stacks (`stack.rs`) are 1 MiB (`KERNEL_SIZE`) on every processor. `stack::leak` returns a `Top`, which isn't `Copy`, so each stack has one user, and `stack::run_on` can safely switch to it. Nothing guards their bottoms yet: that needs the kernel to own the page tables, which OVMF maps read-only.
-- Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
+- Tokens carry a role, `Bsp` or `Ap`. `exit()` gives `Heap<Bsp>`; application processors run the same chain from `Heap<Ap>` to `Interrupts<Ap>`, started after `exit()`, so `trampoline::enter` makes their token (`Heap::application_processor(id)`, unsafe) and passes it to `ap_main`. The role holds the processor's `CpuId` (the BSP is `CpuId::BSP`), so `init_cpu` takes no argument. BSP-only steps exist only for `Bsp`: `on_kernel_stack` on `Heap<Bsp>`, `start_clock` on `Interrupts<Bsp>`, so an AP can't reach `Clock` at all.
 
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
-- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap, id)`.
+- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap)`, whose `Heap<Ap>` carries the id.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
-- `smp::start` is async. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. A processor that doesn't arrive within about a second fails the boot, and after that the trampoline must not be prepared again, since the processor might still turn up.
+- `smp::start` is async: a `try_fold` over the enabled processors that hands the trampoline and the tick stream from one start to the next. `Trampoline::launch` consumes the trampoline and writes the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
+- The handoff is built as plain data (`Handoff::new`) from `ControlRegisters::read().for_startup()`. The trampoline's selectors are computed from the positions its GDT is filled in by.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
-- Access is only through `cpu::with(|cpu| ...)`, which disables interrupts and, being a closure, can't be held across an `.await`.
+- Access needs a `cpu::Local`, the proof that this processor's block exists, which `cpu::init` returns and the `PerCpu`/`Interrupts`/`Clock` tokens carry. It is `Copy` but not `Send`, since it only holds on the processor that made it. `local.with(|cpu| ...)` disables interrupts and, being a closure, can't be held across an `.await`; `local.with_lapic` is the one place that borrows the LAPIC. Interrupt and exception handlers, which can't be handed one, use `unsafe { Local::assume() }`, sound because the IDT is only loaded after `init_cpu`.
 - The block's contents need not be `Send`/`Sync`. The LAPIC handle (x2apic's `LocalApic` is deliberately `!Send`) lives there.
 
 ### Descriptor tables and exceptions (`gdt.rs`, `exception.rs`)
 - The kernel owns its GDT; nothing uses the firmware's after `init_cpu`. Every processor has its own table (for its own TSS), but all start with the same `SEGMENTS`, built with `from_raw_entries`, so `KERNEL_CODE`/`KERNEL_DATA` mean the same thing everywhere. IDT entries name `KERNEL_CODE` explicitly (`exception::gate`) rather than copying whatever CS holds.
 - Double fault, NMI and machine check each run on their own 32 KiB interrupt stack (`gdt::InterruptStack`), so a double fault from a bad stack pointer is reported instead of triple faulting. The TSS must be loaded before the IDT, which the typestates guarantee (`init_cpu` before `enable_interrupts`).
-- A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them.
+- A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them. The `exceptions!` list in `exception.rs` is the one place that names every exception: it generates the plain handlers and the whole IDT wiring, including which exceptions get their own interrupt stack.
 
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
 - `timer::ticks(&mut Clock)` is a `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). The `Clock` token (`arch::Clock`, made only by `start_clock`) proves ticks are coming, and the stream borrows it mutably, so there is only ever one consumer, checked at compile time (the waker slot holds one task). `kernel_main` takes `&mut Clock` for the same reason. Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
-- `executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
-- Its waker only sets a static flag, so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
+- `Executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. It takes `&mut self`, so it can't be re-entered on the same executor, whose wake-ups a nested call could swallow; each processor can have its own executor. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
+- Its waker only sets the executor's flag, a leaked `&'static AtomicBool` (a waker can outlive any one `block_on`: the timer keeps the last one), so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
 - A wake from another processor won't interrupt a halted one. Once other processors run tasks, that needs an IPI.
 
 ### Dependency notes

@@ -58,7 +58,7 @@ pub enum InterruptStack {
 }
 
 impl InterruptStack {
-    const COUNT: usize = 3;
+    const ALL: [Self; 3] = [Self::DoubleFault, Self::NonMaskable, Self::MachineCheck];
 
     /// Its interrupt stack table slot, as `EntryOptions::set_stack_index`
     /// takes it.
@@ -69,13 +69,17 @@ impl InterruptStack {
 
 const INTERRUPT_STACK_SIZE: usize = 32 * 1024;
 
-/// A task state segment with `stacks` as its interrupt stacks, each at its
-/// [`InterruptStack::index`].
-fn task_state(stacks: [VirtAddr; InterruptStack::COUNT]) -> TaskStateSegment {
+/// A task state segment with each of `stacks` in its slot of the interrupt
+/// stack table.
+fn task_state(stacks: &[(InterruptStack, VirtAddr)]) -> TaskStateSegment {
     let mut tss = TaskStateSegment::new();
     // Assigned whole: the segment is packed, so its fields can't be borrowed.
-    tss.interrupt_stack_table =
-        array::from_fn(|i| stacks.get(i).copied().unwrap_or(VirtAddr::zero()));
+    tss.interrupt_stack_table = array::from_fn(|slot| {
+        stacks
+            .iter()
+            .find(|(stack, _)| usize::from(stack.index()) == slot)
+            .map_or(VirtAddr::zero(), |&(_, top)| top)
+    });
     tss
 }
 
@@ -107,8 +111,8 @@ pub unsafe fn load_boot() {
 /// As for [`load_boot`]. The heap must be up.
 pub unsafe fn load_own() {
     let stacks =
-        [(); InterruptStack::COUNT].map(|()| stack::leak::<INTERRUPT_STACK_SIZE>().into_addr());
-    let tss = Box::leak(Box::new(task_state(stacks)));
+        InterruptStack::ALL.map(|slot| (slot, stack::leak::<INTERRUPT_STACK_SIZE>().into_addr()));
+    let tss = Box::leak(Box::new(task_state(&stacks)));
     Box::leak(Box::new(table(tss))).load();
     // SAFETY: The caller guarantees 64-bit ring 0, and the table just
     // loaded holds this task state segment, which nothing has loaded yet.
