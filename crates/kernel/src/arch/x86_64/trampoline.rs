@@ -78,10 +78,7 @@ struct Handoff {
     gdt_pointer: DescriptorTablePointer,
     protected_mode: FarPointer,
     long_mode: FarPointer,
-    cr0: u64,
-    cr3: u64,
-    cr4: u64,
-    efer: u64,
+    registers: ControlRegisters,
     stack_top: u64,
     enter: unsafe extern "sysv64" fn(*const Handoff) -> !,
 
@@ -147,10 +144,10 @@ global_asm!(
     gdt_pointer = const HANDOFF + offset_of!(Handoff, gdt_pointer),
     protected_mode = const HANDOFF + offset_of!(Handoff, protected_mode),
     data = const selector(DATA),
-    cr4 = const HANDOFF + offset_of!(Handoff, cr4),
-    cr3 = const HANDOFF + offset_of!(Handoff, cr3),
-    efer = const HANDOFF + offset_of!(Handoff, efer),
-    cr0 = const HANDOFF + offset_of!(Handoff, cr0),
+    cr4 = const HANDOFF + offset_of!(Handoff, registers.cr4),
+    cr3 = const HANDOFF + offset_of!(Handoff, registers.cr3),
+    efer = const HANDOFF + offset_of!(Handoff, registers.efer),
+    cr0 = const HANDOFF + offset_of!(Handoff, registers.cr0),
     long_mode = const HANDOFF + offset_of!(Handoff, long_mode),
     stack_top = const HANDOFF + offset_of!(Handoff, stack_top),
     handoff = const HANDOFF,
@@ -259,8 +256,10 @@ impl Launch {
 }
 
 /// The control registers a starting processor takes from the bootstrap
-/// processor.
+/// processor. Laid out for the trampoline code, which reads them from the
+/// handoff.
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct ControlRegisters {
     cr0: u64,
     cr3: u64,
@@ -316,10 +315,7 @@ impl Handoff {
             },
             protected_mode: far(&raw const wasmos_trampoline_protected, CODE32),
             long_mode: far(&raw const wasmos_trampoline_long, CODE64),
-            cr0: registers.cr0,
-            cr3: registers.cr3,
-            cr4: registers.cr4,
-            efer: registers.efer,
+            registers,
             stack_top: stack.into_addr().as_u64(),
             enter,
             id,
