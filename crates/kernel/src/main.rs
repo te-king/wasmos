@@ -6,11 +6,12 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use futures_util::{StreamExt, future::join};
-use wasmi::{Engine, Error, Module, Store};
+use futures_util::{StreamExt, future::join3};
+use wasmi::Error;
 
 mod arch;
 mod executor;
+mod guest;
 mod host;
 mod log;
 mod timer;
@@ -18,20 +19,8 @@ mod timer;
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
 pub async fn kernel_main() -> Result<(), Error> {
-    run_guest(WSHELL)?;
-    join(example_task(), tick_task()).await;
-    Ok(())
-}
-
-/// Instantiates a guest module and runs its entry point to completion.
-fn run_guest(wasm: &[u8]) -> Result<(), Error> {
-    let engine = Engine::default();
-    let mut store = Store::new(&engine, ());
-    let module = Module::new(&engine, wasm)?;
-    let instance = host::linker(&engine)?.instantiate_and_start(&mut store, &module)?;
-    instance
-        .get_typed_func::<(), ()>(&store, wasmos_abi::ENTRY)?
-        .call(&mut store, ())
+    let (shell, (), ()) = join3(guest::run(WSHELL), example_task(), tick_task()).await;
+    shell
 }
 
 async fn async_number() -> u32 {

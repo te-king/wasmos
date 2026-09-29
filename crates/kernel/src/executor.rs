@@ -6,7 +6,7 @@
 //! makes wakers safe to use from interrupt handlers.
 
 use core::{
-    future::Future,
+    future::{self, Future},
     pin::pin,
     ptr,
     sync::atomic::{AtomicBool, Ordering},
@@ -46,6 +46,22 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 
     RUNNING.store(false, Ordering::Release);
     output
+}
+
+/// Lets the rest of the root future run before carrying on: pending once,
+/// having woken itself, so the executor polls again straight away.
+pub async fn yield_now() {
+    let mut yielded = false;
+    future::poll_fn(|cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
 }
 
 /// A waker that sets [`WOKEN`]. It carries no data, so cloning and dropping
