@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use futures_util::{StreamExt, future::join3};
+use futures_util::{StreamExt, future::join};
 use wasmi::Error;
 
 mod arch;
@@ -20,18 +20,8 @@ const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
 /// The kernel proper, once the boot sequence has started the clock.
 pub async fn kernel_main(clock: &mut arch::Clock) -> Result<(), Error> {
-    let ticks = timer::ticks(clock);
-    let (shell, (), ()) = join3(guest::run(WSHELL), example_task(), tick_task(ticks)).await;
+    let (shell, ()) = join(guest::run(WSHELL), tick_task(timer::ticks(clock))).await;
     shell
-}
-
-async fn async_number() -> u32 {
-    42
-}
-
-async fn example_task() {
-    let number = async_number().await;
-    logln!("async number: {number}");
 }
 
 async fn tick_task(ticks: timer::Ticks<'_>) {
