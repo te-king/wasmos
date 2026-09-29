@@ -138,8 +138,10 @@ pub unsafe fn disable_legacy_pic() {
 }
 
 /// Every processor's interrupt table: the exception handlers, plus the
-/// local APIC's interrupts.
-static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
+/// local APIC's interrupts. Its gates name the kernel's code segment and the
+/// task state segment's interrupt stacks, so a processor may only load it
+/// once it has its own descriptor table (see `boot::Heap::init_cpu`).
+pub static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = exception::table();
     exception::gate(&mut idt[InterruptIndex::Timer.vector()], timer_handler);
     exception::gate(&mut idt[InterruptIndex::Error.vector()], error_handler);
@@ -149,15 +151,6 @@ static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     );
     idt
 });
-
-/// Loads the interrupt table on the current processor.
-///
-/// Its gates run handlers on the kernel's code segment and the task state
-/// segment's interrupt stacks, so it takes the `PerCpu` stage's word (see
-/// `boot`) that this processor has its own descriptor table loaded.
-pub fn install_interrupt_table() {
-    INTERRUPT_TABLE.load();
-}
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     crate::timer::tick();
@@ -178,8 +171,8 @@ extern "x86-interrupt" fn spurious_handler(stack_frame: InterruptStackFrame) {
 /// Tells the current processor's local APIC that the interrupt being handled
 /// is finished, so it can deliver the next one.
 fn end_of_interrupt() {
-    // SAFETY: Handlers only run once the interrupt table is loaded, which is
-    // after `cpu::init` (`enable_interrupts` takes the `PerCpu` token).
+    // SAFETY: Handlers only run once the interrupt table is loaded, which
+    // `init_cpu` does after `cpu::init`.
     let local = unsafe { Local::assume() };
     // SAFETY: Only called at the end of handlers for interrupts that the
     // local APIC delivered (never for spurious interrupts; see above).

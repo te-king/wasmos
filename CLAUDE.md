@@ -63,8 +63,7 @@ firmware
     .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
 // in bsp_main:
 let mut clock = heap
-    .init_cpu()           // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
-    .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
+    .init_cpu()           // own GDT + TSS, per-CPU block, then IDT, LAPIC (timer stopped), sti; logs "online"
     .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
 finish(Executor::new().block_on(async {
     smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
@@ -91,12 +90,12 @@ finish(Executor::new().block_on(async {
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
-- Access needs a `cpu::Local`, the proof that this processor's block exists, which `cpu::init` returns and the `PerCpu`/`Interrupts`/`Clock` tokens carry. It is `Copy` but not `Send`, since it only holds on the processor that made it. `local.with(|cpu| ...)` disables interrupts and, being a closure, can't be held across an `.await`; `local.with_lapic` is the one place that borrows the LAPIC. Interrupt and exception handlers, which can't be handed one, use `unsafe { Local::assume() }`, sound because the IDT is only loaded after `init_cpu`.
+- Access needs a `cpu::Local`, the proof that this processor's block exists, which `cpu::init` returns and the `Interrupts`/`Clock` tokens carry. It is `Copy` but not `Send`, since it only holds on the processor that made it. `local.with(|cpu| ...)` disables interrupts and, being a closure, can't be held across an `.await`; `local.with_lapic` is the one place that borrows the LAPIC. Interrupt and exception handlers, which can't be handed one, use `unsafe { Local::assume() }`, sound because `init_cpu` only loads the IDT after `cpu::init`.
 - The block's contents need not be `Send`/`Sync`. The LAPIC handle (x2apic's `LocalApic` is deliberately `!Send`) lives there.
 
 ### Descriptor tables and exceptions (`gdt.rs`, `exception.rs`)
 - The kernel owns its GDT; nothing uses the firmware's after `init_cpu`. Every processor has its own table (for its own TSS), but all start with the same `SEGMENTS`, built with `from_raw_entries`, so `KERNEL_CODE`/`KERNEL_DATA` mean the same thing everywhere. IDT entries name `KERNEL_CODE` explicitly (`exception::gate`) rather than copying whatever CS holds.
-- Double fault, NMI and machine check each run on their own 32 KiB interrupt stack (`gdt::InterruptStack`), so a double fault from a bad stack pointer is reported instead of triple faulting. The TSS must be loaded before the IDT, which the typestates guarantee (`init_cpu` before `enable_interrupts`).
+- Double fault, NMI and machine check each run on their own 32 KiB interrupt stack (`gdt::InterruptStack`), so a double fault from a bad stack pointer is reported instead of triple faulting. The TSS must be loaded before the IDT, which `init_cpu` does in that order, in one step.
 - A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them. The `exceptions!` list in `exception.rs` is the one place that names every exception: it generates the plain handlers and the whole IDT wiring, including which exceptions get their own interrupt stack.
 
 ### Interrupts and async

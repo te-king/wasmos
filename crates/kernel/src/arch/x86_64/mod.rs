@@ -66,9 +66,7 @@ fn bsp_main(
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let interrupts = heap.init_cpu().enable_interrupts();
-    logln!("cpu {}: online", interrupts.id());
-    let mut clock = interrupts.start_clock();
+    let mut clock = heap.init_cpu().start_clock();
 
     match &processors {
         Ok(processors) => log!("{}", smp::Listing(processors)),
@@ -117,8 +115,7 @@ impl Display for KernelError {
 
 /// Where each application processor goes once it has entered the kernel.
 fn ap_main(heap: boot::Heap<boot::Ap>) -> ! {
-    let interrupts = heap.init_cpu().enable_interrupts();
-    logln!("cpu {}: online", interrupts.id());
+    heap.init_cpu();
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();

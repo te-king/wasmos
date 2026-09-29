@@ -66,8 +66,8 @@ impl fmt::Display for Fault {
 
 /// Panics with `fault`, naming the processor it happened on.
 fn fatal(fault: Fault) -> ! {
-    // SAFETY: The interrupt table is only loaded after `cpu::init`
-    // (`enable_interrupts` takes the `PerCpu` token).
+    // SAFETY: The interrupt table is only loaded after `cpu::init` (see
+    // `boot::Heap::init_cpu`).
     let id = unsafe { Local::assume() }.id();
     panic!("cpu {id}: {fault}")
 }

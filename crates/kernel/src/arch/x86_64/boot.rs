@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! BootServices --exit()--> Heap<Bsp> --on_kernel_stack()--> Heap<Bsp>
-//! Heap<R> --init_cpu()--> PerCpu<R> --enable_interrupts()--> Interrupts<R>
+//! Heap<R> --init_cpu()--> Interrupts<R>
 //! Interrupts<Bsp> --start_clock()--> Clock
 //! ```
 //!
@@ -25,7 +25,7 @@ use super::{
     cpu::{self, CpuId, Local},
     gdt, int, mem, stack,
 };
-use crate::log;
+use crate::{log, logln};
 
 /// Boot services are available.
 pub struct BootServices(());
@@ -33,11 +33,9 @@ pub struct BootServices(());
 /// Boot services have been exited. The serial log and the full heap are up.
 pub struct Heap<R>(R);
 
-/// This processor has its own descriptor table and task state segment, and
-/// its per-CPU block exists: the token holds the proof, a [`Local`].
-pub struct PerCpu<R>(R, Local);
-
-/// Interrupts are configured and enabled on this processor.
+/// This processor has its own descriptor table and task state segment, its
+/// per-CPU block (the token holds the proof, a [`Local`]), and interrupts
+/// configured and enabled.
 pub struct Interrupts<R>(R, Local);
 
 /// The bootstrap processor, which the firmware runs the kernel on.
@@ -86,7 +84,7 @@ impl BootServices {
         // borrows it (like `smp::discover`) closes any protocol it opens.
         let memory_map =
             unsafe { uefi::boot::exit_boot_services(Some(MemoryType::RUNTIME_SERVICES_DATA)) };
-        // The firmware's interrupt table stays loaded until `enable_interrupts`
+        // The firmware's interrupt table stays loaded until `init_cpu`
         // replaces it, and it names the firmware's selectors, which
         // `init_cpu` replaces first.
         interrupts::disable();
@@ -131,39 +129,28 @@ impl Heap<Ap> {
 }
 
 impl<R: Role> Heap<R> {
-    /// Gives this processor its own descriptor table and task state
-    /// segment, then sets up its per-CPU block, including its local APIC.
-    pub fn init_cpu(self) -> PerCpu<R> {
+    /// Brings this processor online: its own descriptor table and task
+    /// state segment, its per-CPU block, then the interrupt table, its local
+    /// APIC (with the timer stopped) and interrupts.
+    ///
+    /// The order matters: the interrupt table's gates name the new table's
+    /// selectors and interrupt stacks, and its handlers need the per-CPU
+    /// block.
+    pub fn init_cpu(self) -> Interrupts<R> {
+        let id = self.0.id();
         // SAFETY: The heap is up, this is 64-bit ring 0 with interrupts
-        // disabled (by `exit`, or the trampoline), and the interrupt table
-        // that would name the old selectors isn't loaded until
-        // `enable_interrupts`.
+        // disabled (by `exit`, or the trampoline), and no interrupt table
+        // naming the old selectors is loaded until below.
         unsafe { gdt::load_own() };
         // SAFETY: The heap is up, and consuming `Heap` means this runs once.
-        let local = unsafe { cpu::init(self.0.id(), int::local_apic()) };
-        PerCpu(self.0, local)
-    }
-}
-
-impl<R: Role> PerCpu<R> {
-    /// Loads the interrupt table, enables the local APIC with its timer
-    /// stopped, and enables interrupts.
-    ///
-    /// The table's gates use this processor's descriptor table and
-    /// interrupt stacks, which is why this needs `PerCpu`.
-    pub fn enable_interrupts(self) -> Interrupts<R> {
-        int::install_interrupt_table();
-        // SAFETY: The IDT is loaded before any source of interrupts is
-        // enabled, and the per-CPU block that the handlers assume exists.
-        unsafe { int::install_local_apic(self.1) };
+        let local = unsafe { cpu::init(id, int::local_apic()) };
+        int::INTERRUPT_TABLE.load();
+        // SAFETY: The interrupt table is loaded before any source of
+        // interrupts is enabled.
+        unsafe { int::install_local_apic(local) };
         interrupts::enable();
-        Interrupts(self.0, self.1)
-    }
-}
-
-impl<R: Role> Interrupts<R> {
-    pub fn id(&self) -> CpuId {
-        self.0.id()
+        logln!("cpu {id}: online");
+        Interrupts(self.0, local)
     }
 }
 
