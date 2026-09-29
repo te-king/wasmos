@@ -336,7 +336,7 @@ impl Handoff {
 unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     // Everything is copied out before signalling arrival, since the
     // bootstrap processor can rewrite the handoff as soon as it sees it.
-    // SAFETY: The trampoline passes the handoff that `prepare` wrote.
+    // SAFETY: The trampoline passes the handoff that `launch` wrote.
     let (id, main) = unsafe { ((*handoff).id, (*handoff).main) };
 
     // The descriptor table in use is the handoff's, so switch to one that
@@ -348,6 +348,6 @@ unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     // SAFETY: The handoff is still valid, and `arrived` is atomic.
     unsafe { &(*handoff).arrived }.store(true, Ordering::Release);
     // SAFETY: This processor has just entered the kernel, only gets here
-    // once, and `id` is the one `prepare` was given for it.
+    // once, and `id` is the one `launch` was given for it.
     main(unsafe { Heap::application_processor(id) })
 }
