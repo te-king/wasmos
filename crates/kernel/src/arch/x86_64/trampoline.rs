@@ -20,17 +20,16 @@ use uefi::{
 };
 use x86_64::{
     VirtAddr,
-    instructions::tables::{lgdt, sgdt},
     registers::{
         control::{Cr0, Cr3, Cr4, Cr4Flags},
         model_specific::{Efer, EferFlags},
-        segmentation::{CS, DS, ES, SS, Segment, SegmentSelector},
     },
     structures::{DescriptorTablePointer, gdt::DescriptorFlags},
 };
 
 use super::{
     boot::{BootServices, Heap},
+    gdt,
     mem::PAGE_SIZE,
     stack,
 };
@@ -73,9 +72,6 @@ struct Handoff {
     // Read by `enter`.
     id: u32,
     main: fn(Heap, u32) -> !,
-    kernel_gdt: DescriptorTablePointer,
-    code_selector: SegmentSelector,
-    data_selector: SegmentSelector,
     /// Set once the processor no longer needs this handoff.
     arrived: AtomicBool,
 }
@@ -237,9 +233,6 @@ impl Trampoline {
             enter,
             id,
             main,
-            kernel_gdt: sgdt(),
-            code_selector: CS::get_reg(),
-            data_selector: SS::get_reg(),
             arrived: AtomicBool::new(false),
         };
         // SAFETY: The handoff fits in the page (checked at compile time), and
@@ -273,29 +266,13 @@ unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     // Everything is copied out before signalling arrival, since the
     // bootstrap processor can rewrite the handoff as soon as it sees it.
     // SAFETY: The trampoline passes the handoff that `prepare` wrote.
-    let (id, main, gdt, code, data) = unsafe {
-        let handoff = &*handoff;
-        (
-            handoff.id,
-            handoff.main,
-            handoff.kernel_gdt,
-            handoff.code_selector,
-            handoff.data_selector,
-        )
-    };
+    let (id, main) = unsafe { ((*handoff).id, (*handoff).main) };
 
-    // Switch to the bootstrap processor's descriptor table, so that this
-    // processor uses the same selectors as the interrupt table's entries.
-    // SAFETY: That table is the firmware's, outside the conventional memory
-    // the allocator claims, and its selectors are the flat 64-bit segments
-    // the bootstrap processor is running on.
-    unsafe {
-        lgdt(&gdt);
-        CS::set_reg(code);
-        SS::set_reg(data);
-        DS::set_reg(data);
-        ES::set_reg(data);
-    }
+    // The descriptor table in use is the handoff's, so switch to one that
+    // stays put until this processor gets its own in `init_cpu`.
+    // SAFETY: The trampoline left this processor in 64-bit ring 0 with
+    // interrupts disabled, and no interrupt table is loaded yet.
+    unsafe { gdt::load_boot() };
 
     // SAFETY: The handoff is still valid, and `arrived` is atomic.
     unsafe { &(*handoff).arrived }.store(true, Ordering::Release);

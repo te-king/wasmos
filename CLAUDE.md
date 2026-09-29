@@ -31,7 +31,7 @@ cargo clippy -p wasmos -p wasmos-abi -- -D warnings
 
 There is no unit-test harness. The test is booting: after formatting and clippy, CI (`.github/workflows/ci.yml`) runs `cargo build --locked` and `cargo run --locked`, which fails on any kernel panic, reported failure or hang. The futures `kernel_main` joins (e.g. `tick_task`) act as boot-time smoke tests.
 
-To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, a bad pointer passed to `wlib::sys::wasmos_print` from wshell to test guest traps, and not setting `arrived` in `trampoline::enter` to test the processor startup timeout. To try other processor counts or topologies (e.g. `-smp 1`, `-smp 8,sockets=2,cores=2,threads=2`), temporarily change the runner's QEMU arguments in `src/main.rs`.
+To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a read from an unmapped address (e.g. `0x7000_0000_0000`) or `mov rsp, <unmapped>; push rax` to test fault reports and the double-fault stack, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, a bad pointer passed to `wlib::sys::wasmos_print` from wshell to test guest traps, and not setting `arrived` in `trampoline::enter` to test the processor startup timeout. To try other processor counts or topologies (e.g. `-smp 1`, `-smp 8,sockets=2,cores=2,threads=2`), temporarily change the runner's QEMU arguments in `src/main.rs`.
 
 The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `target/ovmf` on first run, so `cargo clean` forces a re-download.
 
@@ -62,7 +62,7 @@ firmware
     .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
 // in bsp_main:
 let clock = heap
-    .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
+    .init_cpu(0)          // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // BSP only: its LAPIC timer drives `timer`
 finish(executor::block_on(async {
@@ -83,7 +83,7 @@ finish(executor::block_on(async {
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
-- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(heap, id)`.
+- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap, id)`.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
 - `smp::start` is async. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. A processor that doesn't arrive within about a second fails the boot, and after that the trampoline must not be prepared again, since the processor might still turn up.
 
@@ -91,6 +91,11 @@ finish(executor::block_on(async {
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
 - Access is only through `cpu::with(|cpu| ...)`, which disables interrupts and, being a closure, can't be held across an `.await`.
 - The block's contents need not be `Send`/`Sync`. The LAPIC handle (x2apic's `LocalApic` is deliberately `!Send`) lives there.
+
+### Descriptor tables and exceptions (`gdt.rs`, `exception.rs`)
+- The kernel owns its GDT; nothing uses the firmware's after `init_cpu`. Every processor has its own table (for its own TSS), but all start with the same `SEGMENTS`, built with `from_raw_entries`, so `KERNEL_CODE`/`KERNEL_DATA` mean the same thing everywhere. IDT entries name `KERNEL_CODE` explicitly (`exception::gate`) rather than copying whatever CS holds.
+- Double fault, NMI and machine check each run on their own 32 KiB interrupt stack (`gdt::InterruptStack`), so a double fault from a bad stack pointer is reported instead of triple faulting. The TSS must be loaded before the IDT, which the typestates guarantee (`init_cpu` before `enable_interrupts`).
+- A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them.
 
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.

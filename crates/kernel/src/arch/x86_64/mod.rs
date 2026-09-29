@@ -9,6 +9,8 @@ use crate::{executor, kernel_main, logln};
 
 mod boot;
 mod cpu;
+mod exception;
+mod gdt;
 mod int;
 mod mem;
 mod panic;
