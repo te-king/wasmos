@@ -46,31 +46,25 @@ fn boot_drive(kernel: &Path) -> Result<TempDir> {
 
 /// QEMU's arguments for booting the drive in directory `drive`, with the
 /// OVMF images `code` and `vars`.
+///
+/// With `-no-reboot`, a reset stops QEMU rather than rebooting into the
+/// kernel again: on a triple fault (on any processor) the kernel can't report
+/// anything, and would otherwise boot in a loop until the timeout.
 fn qemu_args(code: &Path, vars: &Path, drive: &Path) -> Vec<String> {
-    [
-        "-nodefaults",
-        "-display",
-        "none",
-        "-serial",
-        "stdio",
-        "-smp",
-        CPUS,
-        // A reset stops QEMU rather than rebooting into the kernel again. On
-        // a triple fault (on any processor) the kernel can't report
-        // anything, and would otherwise boot in a loop until the timeout.
-        "-no-reboot",
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    ]
+    format!(
+        "-nodefaults -display none -serial stdio -smp {CPUS} -no-reboot \
+         -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+    )
+    .split_whitespace()
     .map(String::from)
-    .into_iter()
+    // Paths go in whole, since they may hold spaces. The drive is writable
+    // only because QEMU's IDE disks can't be read-only; the kernel never
+    // writes to it.
     .chain([
         "-drive".into(),
         pflash(code),
         "-drive".into(),
         pflash(vars),
-        // Writable only because QEMU's IDE disks can't be read-only. The
-        // kernel never writes to it.
         "-drive".into(),
         format!("format=raw,file=fat:rw:{}", drive.display()),
     ])
