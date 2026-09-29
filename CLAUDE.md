@@ -97,7 +97,7 @@ finish(Executor::new().block_on(async {
 ### Descriptor tables and exceptions (`gdt.rs`, `exception.rs`)
 - The kernel owns its GDT; nothing uses the firmware's after `init_cpu`. Every processor has its own table (for its own TSS), but all start with the same `SEGMENTS`, built with `from_raw_entries`, so `KERNEL_CODE`/`KERNEL_DATA` mean the same thing everywhere. IDT entries name `KERNEL_CODE` explicitly (`exception::gate`) rather than copying whatever CS holds.
 - Double fault, NMI and machine check each run on their own 32 KiB interrupt stack (`gdt::InterruptStack`), so a double fault from a bad stack pointer is reported instead of triple faulting. The TSS must be loaded before the IDT, which the typestates guarantee (`init_cpu` before `enable_interrupts`).
-- A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them.
+- A breakpoint logs and resumes. Every other exception becomes a `Fault` (plain data with a `Display` impl) and panics as `cpu N: <fault> at <rip>`, with CR2 and the error code where the processor gives them. The `exceptions!` list in `exception.rs` is the one place that names every exception: it generates the plain handlers and the whole IDT wiring, including which exceptions get their own interrupt stack.
 
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
