@@ -14,6 +14,7 @@ mod mem;
 mod panic;
 mod qemu;
 mod smp;
+mod stack;
 mod trampoline;
 
 /// The kernel log's serial port: COM1, through port I/O.
@@ -51,11 +52,18 @@ fn main() -> Status {
     let firmware = unsafe { boot::BootServices::start() };
     let processors = smp::discover(&firmware);
     let trampoline = trampoline::Trampoline::reserve(&firmware);
-    let clock = firmware
+    firmware
         .exit()
-        .init_cpu(0)
-        .enable_interrupts()
-        .start_clock();
+        .on_kernel_stack(move |heap| bsp_main(heap, processors, trampoline))
+}
+
+/// Where the bootstrap processor goes once it has left the firmware.
+fn bsp_main(
+    heap: boot::Heap,
+    processors: Result<smp::Processors, smp::DiscoveryError>,
+    trampoline: uefi::Result<trampoline::Trampoline>,
+) -> ! {
+    let clock = heap.init_cpu(0).enable_interrupts().start_clock();
 
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {

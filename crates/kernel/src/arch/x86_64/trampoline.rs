@@ -7,7 +7,6 @@
 //! [`enter`] on a fresh stack. Everything it needs is in a [`Handoff`] that
 //! the bootstrap processor writes into the same page before each start.
 
-use alloc::boxed::Box;
 use core::{
     arch::global_asm,
     mem::offset_of,
@@ -33,6 +32,7 @@ use x86_64::{
 use super::{
     boot::{BootServices, Heap},
     mem::PAGE_SIZE,
+    stack,
 };
 
 /// Where the [`Handoff`] sits in the trampoline page, after the code.
@@ -43,12 +43,6 @@ const _: () = assert!(HANDOFF + size_of::<Handoff>() <= PAGE_SIZE);
 const CODE32: u16 = 0x08;
 const DATA: u16 = 0x10;
 const CODE64: u16 = 0x18;
-
-/// Each processor's kernel stack. They are never freed.
-const STACK_SIZE: usize = 256 * 1024;
-
-#[repr(C, align(16))]
-struct Stack([u8; STACK_SIZE]);
 
 /// A far pointer (`m16:32`), the operand of an indirect far jump.
 #[derive(Clone, Copy)]
@@ -219,9 +213,6 @@ impl Trampoline {
         let cr3 = page_table.start_address().as_u64();
         assert!(cr3 < 1 << 32, "page tables are out of 32-bit reach");
 
-        let stack = Box::leak(Box::<Stack>::new_uninit());
-        let stack_top = stack.as_mut_ptr().wrapping_add(1) as u64;
-
         let handoff = Handoff {
             gdt: [
                 0,
@@ -242,7 +233,7 @@ impl Trampoline {
             cr4: Cr4::read_raw() & !Cr4Flags::PCID.bits(),
             // LMA is read-only: the processor sets it when paging comes on.
             efer: Efer::read_raw() & !EferFlags::LONG_MODE_ACTIVE.bits(),
-            stack_top,
+            stack_top: stack::leak::<{ stack::KERNEL_SIZE }>().into_addr().as_u64(),
             enter,
             id,
             main,

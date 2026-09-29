@@ -18,7 +18,7 @@ use uart_16550::{Config, Uart16550Tty};
 use uefi::mem::memory_map::MemoryType;
 use x86_64::instructions::interrupts;
 
-use super::{cpu, int, mem};
+use super::{cpu, int, mem, stack};
 use crate::log;
 
 /// Boot services are available.
@@ -71,6 +71,18 @@ impl BootServices {
 }
 
 impl Heap {
+    /// Continues on a fresh kernel stack, for good.
+    ///
+    /// The firmware's stack is too small for the kernel (128 KiB under
+    /// OVMF, where running a guest takes about 310 KiB) and has nothing
+    /// guarding its bottom, below which the allocator may have claimed
+    /// memory: overflowing it silently corrupts the heap. Application
+    /// processors start on a kernel stack, so only the bootstrap processor
+    /// needs this.
+    pub fn on_kernel_stack(self, f: impl FnOnce(Heap) -> !) -> ! {
+        stack::run_on(stack::leak::<{ stack::KERNEL_SIZE }>(), move || f(self))
+    }
+
     /// The first stage on an application processor, which is only started
     /// after the bootstrap processor has exited boot services.
     ///

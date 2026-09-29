@@ -57,8 +57,11 @@ The order is load-bearing, so it is enforced with typestates. Each stage is a ze
 let firmware = unsafe { boot::BootServices::start() };
 let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
 let trampoline = Trampoline::reserve(&firmware); // a page below 1 MiB, also needs boot services
-let clock = firmware
+firmware
     .exit()               // exit boot services, mask legacy PIC, serial log, memory map -> allocator
+    .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
+// in bsp_main:
+let clock = heap
     .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // BSP only: its LAPIC timer drives `timer`
@@ -73,12 +76,14 @@ finish(executor::block_on(async {
 - `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
+- The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 310 KiB of stack, so staying on it silently corrupted the heap.
+- Stacks (`stack.rs`) are 1 MiB (`KERNEL_SIZE`) on every processor. `stack::leak` returns a `Top`, which isn't `Copy`, so each stack has one user, and `stack::run_on` can safely switch to it. Nothing guards their bottoms yet: that needs the kernel to own the page tables, which OVMF maps read-only.
 - Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
 
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
-- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh 256 KiB stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(heap, id)`.
+- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(heap, id)`.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
 - `smp::start` is async. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. A processor that doesn't arrive within about a second fails the boot, and after that the trampoline must not be prepared again, since the processor might still turn up.
 
