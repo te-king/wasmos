@@ -52,7 +52,7 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 - aarch64 is planned: `arch/aarch64/mod.rs` is a placeholder. Building for another target currently stops at a `compile_error!` in `arch/mod.rs`, after all the portable dependencies have compiled.
 
 ### Boot sequence (`crates/kernel/src/arch/x86_64/boot.rs`, `mod.rs`)
-The order is load-bearing, so it is enforced with typestates. Each stage is a zero-sized token that only the previous stage can produce, and each transition consumes it:
+The order is load-bearing, so it is enforced with typestates. Each stage is a token (zero-sized, apart from an application processor's id) that only the previous stage can produce, and each transition consumes it:
 
 ```rust
 let firmware = unsafe { boot::BootServices::start() };
@@ -84,7 +84,7 @@ finish(Executor::new().block_on(async {
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
-- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap, id)`.
+- A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap)`, whose `Heap<Ap>` carries the id.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
 - `smp::start` is async: a `try_fold` over the enabled processors that hands the trampoline and the tick stream from one start to the next. `Trampoline::launch` consumes the trampoline and writes the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
 - The handoff is built as plain data (`Handoff::new`) from `ControlRegisters::read().for_startup()`. The trampoline's selectors are computed from the positions its GDT is filled in by.
