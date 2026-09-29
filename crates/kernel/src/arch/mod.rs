@@ -6,6 +6,8 @@
 //! directly, so a new architecture must provide exactly these items:
 //!
 //! - `Console`: the serial port type the kernel log writes to.
+//! - `Clock`: proof that the kernel's clock is running, so `timer::tick`
+//!   is being called. Only the boot sequence can make one.
 //! - `without_interrupts`, `disable_interrupts`: this processor's interrupt
 //!   masking.
 //! - `wait_for_interrupt`: the executor's idle loop.
@@ -17,4 +19,4 @@ mod imp;
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("wasmos only supports x86_64 so far (aarch64 is planned)");
 
-pub use imp::{Console, disable_interrupts, wait_for_interrupt, without_interrupts};
+pub use imp::{Clock, Console, disable_interrupts, wait_for_interrupt, without_interrupts};

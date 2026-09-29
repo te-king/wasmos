@@ -18,8 +18,10 @@ mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
-pub async fn kernel_main() -> Result<(), Error> {
-    let (shell, (), ()) = join3(guest::run(WSHELL), example_task(), tick_task()).await;
+/// The kernel proper, once the boot sequence has started the clock.
+pub async fn kernel_main(clock: &mut arch::Clock) -> Result<(), Error> {
+    let ticks = timer::ticks(clock);
+    let (shell, (), ()) = join3(guest::run(WSHELL), example_task(), tick_task(ticks)).await;
     shell
 }
 
@@ -32,8 +34,7 @@ async fn example_task() {
     logln!("async number: {number}");
 }
 
-async fn tick_task() {
-    let ticks = timer::ticks().expect("nothing else is using the timer");
+async fn tick_task(ticks: timer::Ticks<'_>) {
     let seen: Vec<u64> = ticks.take(3).collect().await;
     logln!("timer: ticks {seen:?}");
 }

@@ -19,6 +19,8 @@ mod smp;
 mod stack;
 mod trampoline;
 
+pub use boot::Clock;
+
 /// The kernel log's serial port: COM1, through port I/O.
 pub type Console = Uart16550Tty<PioBackend>;
 
@@ -65,7 +67,7 @@ fn bsp_main(
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let clock = heap.init_cpu(0).enable_interrupts().start_clock();
+    let mut clock = heap.init_cpu(0).enable_interrupts().start_clock();
 
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
@@ -83,9 +85,9 @@ fn bsp_main(
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
-            smp::start(&clock, processors, trampoline, ap_main).await?;
+            smp::start(&mut clock, processors, trampoline, ap_main).await?;
         }
-        kernel_main().await?;
+        kernel_main(&mut clock).await?;
         Ok::<_, Box<dyn Error>>(())
     }))
 }

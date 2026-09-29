@@ -46,7 +46,7 @@ The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `t
 - `x86_64-unknown-uefi` is a Windows-style (COFF) target: `#[thread_local]` fails to link (`_tls_index`), which is why per-CPU data uses the GS base instead.
 
 ### Architecture layer (`crates/kernel/src/arch/`)
-- `arch/mod.rs` picks the architecture module with `#[cfg(target_arch)]` and re-exports the only interface the rest of the kernel may use: `Console` (the log's serial port type), `without_interrupts`, `disable_interrupts` and `wait_for_interrupt` (the executor's idle).
+- `arch/mod.rs` picks the architecture module with `#[cfg(target_arch)]` and re-exports the only interface the rest of the kernel may use: `Console` (the log's serial port type), `Clock` (proof the kernel's clock is running), `without_interrupts`, `disable_interrupts` and `wait_for_interrupt` (the executor's idle).
 - Code outside `arch/` must not use `x86_64`, `x2apic` or other architecture crates directly. Those are `cfg(target_arch = "x86_64")` dependencies in `crates/kernel/Cargo.toml`. If neutral code needs something new, add it to the interface.
 - Each architecture module owns its entry point, boot sequence, interrupt handling, panic handler and emulator exit (`arch/x86_64/qemu.rs`).
 - aarch64 is planned: `arch/aarch64/mod.rs` is a placeholder. Building for another target currently stops at a `compile_error!` in `arch/mod.rs`, after all the portable dependencies have compiled.
@@ -67,8 +67,8 @@ let clock = heap
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // BSP only: its LAPIC timer drives `timer`
 finish(executor::block_on(async {
-    smp::start(&clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
-    kernel_main().await?;
+    smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
+    kernel_main(&mut clock).await?;
     ..
 }))
 ```
@@ -101,7 +101,7 @@ finish(executor::block_on(async {
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
-- `timer::ticks()` is a single-consumer `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
+- `timer::ticks(&mut Clock)` is a `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). The `Clock` token (`arch::Clock`, made only by `start_clock`) proves ticks are coming, and the stream borrows it mutably, so there is only ever one consumer, checked at compile time (the waker slot holds one task). `kernel_main` takes `&mut Clock` for the same reason. Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
 - `executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
 - Its waker only sets a static flag, so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
 - A wake from another processor won't interrupt a halted one. Once other processors run tasks, that needs an IPI.

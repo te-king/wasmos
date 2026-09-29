@@ -179,12 +179,12 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
 ///
 /// Needs the clock, since the delays between IPIs are timed in ticks.
 pub async fn start(
-    _: &Clock,
+    clock: &mut Clock,
     processors: &Processors,
     mut trampoline: Trampoline,
     main: fn(Heap, u32) -> !,
 ) -> Result<(), StartError> {
-    let mut ticks = timer::ticks().expect("nothing else is using the timer yet");
+    let mut ticks = timer::ticks(clock);
     let enabled = (1..)
         .zip(&processors.aps)
         .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
@@ -199,7 +199,7 @@ pub async fn start(
 /// On a timeout, the trampoline must not be prepared again: the processor
 /// might still arrive and read its handoff.
 async fn start_one(
-    ticks: &mut Ticks,
+    ticks: &mut Ticks<'_>,
     trampoline: &mut Trampoline,
     id: u32,
     ap: &Processor,
@@ -227,7 +227,7 @@ async fn start_one(
 }
 
 /// Waits for at least `periods` full timer periods.
-async fn sleep(ticks: &mut Ticks, periods: u64) {
+async fn sleep(ticks: &mut Ticks<'_>, periods: u64) {
     wait_until(ticks, periods, || false).await;
 }
 
@@ -237,7 +237,7 @@ async fn sleep(ticks: &mut Ticks, periods: u64) {
 /// The wait is bounded by a tick count rather than a number of items from
 /// `ticks`, which coalesces missed ticks: its first item can be one that
 /// happened before this was called.
-async fn wait_until(ticks: &mut Ticks, periods: u64, done: impl Fn() -> bool) -> bool {
+async fn wait_until(ticks: &mut Ticks<'_>, periods: u64, done: impl Fn() -> bool) -> bool {
     let deadline = timer::after(timer::now(), periods);
     done() || {
         ticks
