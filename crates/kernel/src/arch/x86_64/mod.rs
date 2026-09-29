@@ -5,7 +5,7 @@ use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
-use crate::{executor, kernel_main, logln};
+use crate::{executor::Executor, kernel_main, logln};
 
 mod boot;
 mod cpu;
@@ -82,7 +82,7 @@ fn bsp_main(
         Err(err) => logln!("smp: {err}"),
     }
 
-    finish(executor::block_on(async {
+    finish(Executor::new().block_on(async {
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;

@@ -66,7 +66,7 @@ let mut clock = heap
     .init_cpu()           // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
-finish(executor::block_on(async {
+finish(Executor::new().block_on(async {
     smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
     kernel_main(&mut clock).await?;
     ..
@@ -103,8 +103,8 @@ finish(executor::block_on(async {
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
 - `timer::ticks(&mut Clock)` is a `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). The `Clock` token (`arch::Clock`, made only by `start_clock`) proves ticks are coming, and the stream borrows it mutably, so there is only ever one consumer, checked at compile time (the waker slot holds one task). `kernel_main` takes `&mut Clock` for the same reason. Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
-- `executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
-- Its waker only sets a static flag, so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
+- `Executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. It takes `&mut self`, so it can't be re-entered on the same executor, whose wake-ups a nested call could swallow; each processor can have its own executor. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
+- Its waker only sets the executor's flag, a leaked `&'static AtomicBool` (a waker can outlive any one `block_on`: the timer keeps the last one), so it never allocates or frees, even when woken from an interrupt handler. Keep it that way: freeing memory inside a handler could deadlock on the allocator lock.
 - A wake from another processor won't interrupt a halted one. Once other processors run tasks, that needs an IPI.
 
 ### Dependency notes
