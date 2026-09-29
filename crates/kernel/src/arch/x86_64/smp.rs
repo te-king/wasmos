@@ -16,6 +16,7 @@ use uefi::{
 
 use super::{
     boot::{BootServices, Clock, Heap},
+    cpu::CpuId,
     int,
     trampoline::Trampoline,
 };
@@ -65,9 +66,9 @@ pub enum StartError {
     /// No page below 1 MiB was free for the trampoline.
     Trampoline(uefi::Error),
     /// The local APIC can't address the processor in its current mode.
-    Unaddressable { id: u32, apic_id: u64 },
+    Unaddressable { id: CpuId, apic_id: u64 },
     /// The processor didn't enter the kernel in time.
-    Timeout { id: u32, apic_id: u64 },
+    Timeout { id: CpuId, apic_id: u64 },
 }
 
 impl Processors {
@@ -184,10 +185,11 @@ pub async fn start(
     clock: &mut Clock,
     processors: &Processors,
     mut trampoline: Trampoline,
-    main: fn(Heap, u32) -> !,
+    main: fn(Heap, CpuId) -> !,
 ) -> Result<(), StartError> {
     let mut ticks = timer::ticks(clock);
     let enabled = (1..)
+        .map(CpuId::nth)
         .zip(&processors.aps)
         .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
     for (id, ap) in enabled {
@@ -203,9 +205,9 @@ pub async fn start(
 async fn start_one(
     ticks: &mut Ticks<'_>,
     trampoline: &mut Trampoline,
-    id: u32,
+    id: CpuId,
     ap: &Processor,
-    main: fn(Heap, u32) -> !,
+    main: fn(Heap, CpuId) -> !,
 ) -> Result<(), StartError> {
     let apic_id = ap.apic_id;
     let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;

@@ -67,7 +67,10 @@ fn bsp_main(
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let mut clock = heap.init_cpu(0).enable_interrupts().start_clock();
+    let mut clock = heap
+        .init_cpu(cpu::CpuId::BSP)
+        .enable_interrupts()
+        .start_clock();
 
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
@@ -93,7 +96,7 @@ fn bsp_main(
 }
 
 /// Where each application processor goes once it has entered the kernel.
-fn ap_main(heap: boot::Heap, id: u32) -> ! {
+fn ap_main(heap: boot::Heap, id: cpu::CpuId) -> ! {
     let _interrupts = heap.init_cpu(id).enable_interrupts();
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.

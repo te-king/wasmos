@@ -29,6 +29,7 @@ use x86_64::{
 
 use super::{
     boot::{BootServices, Heap},
+    cpu::CpuId,
     gdt,
     mem::PAGE_SIZE,
     stack,
@@ -70,8 +71,8 @@ struct Handoff {
     enter: unsafe extern "sysv64" fn(*const Handoff) -> !,
 
     // Read by `enter`.
-    id: u32,
-    main: fn(Heap, u32) -> !,
+    id: CpuId,
+    main: fn(Heap, CpuId) -> !,
     /// Set once the processor no longer needs this handoff.
     arrived: AtomicBool,
 }
@@ -199,7 +200,7 @@ impl Trampoline {
     /// before the first start, or once the last one has [`arrived`].
     ///
     /// [`arrived`]: Trampoline::arrived
-    pub fn prepare(&mut self, id: u32, main: fn(Heap, u32) -> !) {
+    pub fn prepare(&mut self, id: CpuId, main: fn(Heap, CpuId) -> !) {
         let page = self.address();
         let far = |label: *const u8, selector| FarPointer {
             offset: (page + offset_of_label(label) as u64) as u32,

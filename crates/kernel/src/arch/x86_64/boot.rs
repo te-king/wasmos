@@ -18,7 +18,10 @@ use uart_16550::{Config, Uart16550Tty};
 use uefi::mem::memory_map::MemoryType;
 use x86_64::instructions::interrupts;
 
-use super::{cpu, gdt, int, mem, stack};
+use super::{
+    cpu::{self, CpuId},
+    gdt, int, mem, stack,
+};
 use crate::log;
 
 /// Boot services are available.
@@ -101,7 +104,7 @@ impl Heap {
 
     /// Gives this processor its own descriptor table and task state
     /// segment, then sets up its per-CPU block, including its local APIC.
-    pub fn init_cpu(self, id: u32) -> PerCpu {
+    pub fn init_cpu(self, id: CpuId) -> PerCpu {
         // SAFETY: The heap is up, this is 64-bit ring 0 with interrupts
         // disabled (by `exit`, or the trampoline), and the interrupt table
         // that would name the old selectors isn't loaded until
@@ -139,7 +142,11 @@ impl Interrupts {
     /// as a tick, so only one processor may run its timer.
     pub fn start_clock(self) -> Clock {
         let id = cpu::with(|cpu| cpu.id);
-        assert_eq!(id, 0, "only the bootstrap processor runs the clock");
+        assert_eq!(
+            id,
+            CpuId::BSP,
+            "only the bootstrap processor runs the clock"
+        );
         // SAFETY: Interrupts are set up on this processor, so the timer
         // handler has its interrupt table entry and per-CPU block.
         unsafe { int::start_timer() };
