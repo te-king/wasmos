@@ -171,14 +171,16 @@ pub struct Trampoline {
 impl Trampoline {
     /// Reserves a page below 1 MiB and copies the trampoline code into it.
     ///
-    /// The page is loader data, which the allocator never claims, so it
-    /// stays reserved after boot services are exited.
+    /// The page is loader code, which the allocator never claims, so it
+    /// stays reserved after boot services are exited. It has to be code
+    /// rather than data: the trampoline keeps running from it once paging
+    /// is on, and firmware may map loader data non-executable.
     pub fn reserve(_: &BootServices) -> uefi::Result<Self> {
         // A startup IPI's vector is the page number, so the page must end
         // below 1 MiB.
         let page = boot::allocate_pages(
             AllocateType::MaxAddress(0xF_FFFF),
-            MemoryType::LOADER_DATA,
+            MemoryType::LOADER_CODE,
             1,
         )?;
         let start = &raw const wasmos_trampoline_start;
