@@ -33,7 +33,7 @@ There is no unit-test harness. The test is booting: after formatting and clippy,
 
 To check a specific behaviour, temporarily inject code and boot, then revert. Examples used here: a `panic!` to test the failure path, a read from an unmapped address (e.g. `0x7000_0000_0000`) or `mov rsp, <unmapped>; push rax` to test fault reports and the double-fault stack, a `hlt` loop with a short `WASMOS_TIMEOUT` to test hangs, `asm!("int 32")` to fire the timer handler, a bad pointer passed to `wlib::sys::wasmos_print` from wshell to test guest traps, a `loop {}` in wshell to check that the other futures still finish while a guest runs, and not setting `arrived` in `trampoline::enter` to test the processor startup timeout. To try other processor counts or topologies (e.g. `-smp 1`, `-smp 8,sockets=2,cores=2,threads=2`), temporarily change the runner's QEMU arguments in `src/main.rs`.
 
-The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `target/ovmf` on first run, so `cargo clean` forces a re-download.
+The runner downloads OVMF firmware (via `ovmf-prebuilt`, SHA-256 pinned) into `target/ovmf` on first run, so `cargo clean` forces a re-download. To use other images instead (a distribution's OVMF, or when the download can't work, e.g. behind a proxy that re-signs TLS, since `ovmf-prebuilt` only trusts its built-in roots), set both `WASMOS_OVMF_CODE` and `WASMOS_OVMF_VARS` to their paths.
 
 ## Architecture
 

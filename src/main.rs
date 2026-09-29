@@ -1,5 +1,5 @@
 use std::env::VarError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -22,12 +22,7 @@ fn main() -> Result<()> {
     let kernel = std::env!("KERNEL_PATH");
     let timeout = timeout()?;
 
-    // Download (and verify) the OVMF firmware on first run, then reuse the cache.
-    let ovmf = Prebuilt::fetch(
-        Source::LATEST,
-        concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"),
-    )
-    .context("failed to fetch OVMF firmware")?;
+    let (code, vars) = firmware()?;
 
     // Create a temporary directory to store the EFI boot files
     let dir = tempfile::Builder::new().prefix("kernel").tempdir()?;
@@ -47,10 +42,10 @@ fn main() -> Result<()> {
     // would otherwise boot in a loop until the timeout.
     cmd.arg("-no-reboot");
     cmd.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"]);
-    cmd.arg("-drive")
-        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Code)));
-    cmd.arg("-drive")
-        .arg(pflash(&ovmf.get_file(Arch::X64, FileType::Vars)));
+    cmd.arg("-drive").arg(pflash(&code));
+    cmd.arg("-drive").arg(pflash(&vars));
+    // Writable only because QEMU's IDE disks can't be read-only. The kernel
+    // never writes to it.
     cmd.args([
         "-drive",
         &format!("format=raw,file=fat:rw:{}", dir.path().display()),
@@ -67,6 +62,30 @@ fn main() -> Result<()> {
         Some(0) => bail!("the machine reset or shut down, e.g. on a triple fault"),
         Some(code) => bail!("QEMU exited unexpectedly with status {code}"),
         None => bail!("QEMU was terminated by a signal"),
+    }
+}
+
+/// The OVMF code and variable store images: the files `WASMOS_OVMF_CODE` and
+/// `WASMOS_OVMF_VARS` name (a distribution's OVMF, say), or else the pinned
+/// prebuilt, downloaded and verified into `target/ovmf` on first run.
+fn firmware() -> Result<(PathBuf, PathBuf)> {
+    match (
+        std::env::var_os("WASMOS_OVMF_CODE"),
+        std::env::var_os("WASMOS_OVMF_VARS"),
+    ) {
+        (Some(code), Some(vars)) => Ok((code.into(), vars.into())),
+        (None, None) => {
+            let ovmf = Prebuilt::fetch(
+                Source::LATEST,
+                concat!(env!("CARGO_MANIFEST_DIR"), "/target/ovmf"),
+            )
+            .context("failed to fetch OVMF firmware (or set WASMOS_OVMF_CODE and _VARS)")?;
+            Ok((
+                ovmf.get_file(Arch::X64, FileType::Code),
+                ovmf.get_file(Arch::X64, FileType::Vars),
+            ))
+        }
+        _ => bail!("set both WASMOS_OVMF_CODE and WASMOS_OVMF_VARS, or neither"),
     }
 }
 
