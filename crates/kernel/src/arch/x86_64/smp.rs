@@ -6,9 +6,10 @@
 //! [`Trampoline`].
 
 use alloc::vec::Vec;
-use core::{error, fmt, future, iter};
+use core::{fmt, future, iter};
 
 use futures_util::{StreamExt, TryStreamExt, stream};
+use thiserror::Error;
 use uefi::{
     boot,
     proto::pi::mp::{MpServices, ProcessorInformation},
@@ -51,22 +52,23 @@ pub struct Processors {
 pub struct Listing<'a>(pub &'a Processors);
 
 /// Why processor discovery failed.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DiscoveryError {
-    /// The MP Services protocol is missing or one of its calls failed.
-    Firmware(uefi::Error),
-    /// The firmware didn't report exactly one bootstrap processor.
+    #[error("MP Services unavailable: {0:?}")]
+    Firmware(#[from] uefi::Error),
+    #[error("firmware reported {0} bootstrap processors")]
     BspCount(usize),
 }
 
 /// Why the application processors couldn't all be started.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum StartError {
-    /// No page below 1 MiB was free for the trampoline.
+    #[error("no page below 1 MiB for the trampoline: {0:?}")]
     Trampoline(uefi::Error),
     /// The local APIC can't address the processor in its current mode.
+    #[error("cpu {id}: apic {apic_id} can't be addressed")]
     Unaddressable { id: CpuId, apic_id: u64 },
-    /// The processor didn't enter the kernel in time.
+    #[error("cpu {id}: apic {apic_id} didn't start")]
     Timeout { id: CpuId, apic_id: u64 },
 }
 
@@ -103,12 +105,6 @@ impl From<&ProcessorInformation> for Processor {
     }
 }
 
-impl From<uefi::Error> for DiscoveryError {
-    fn from(err: uefi::Error) -> Self {
-        DiscoveryError::Firmware(err)
-    }
-}
-
 impl fmt::Display for Processor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -142,37 +138,6 @@ impl fmt::Display for Listing<'_> {
         })
     }
 }
-
-impl fmt::Display for DiscoveryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DiscoveryError::Firmware(err) => write!(f, "MP Services unavailable: {err:?}"),
-            DiscoveryError::BspCount(count) => {
-                write!(f, "firmware reported {count} bootstrap processors")
-            }
-        }
-    }
-}
-
-impl fmt::Display for StartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StartError::Trampoline(err) => {
-                write!(f, "no page below 1 MiB for the trampoline: {err:?}")
-            }
-            StartError::Unaddressable { id, apic_id } => {
-                write!(f, "cpu {id}: apic {apic_id} can't be addressed")
-            }
-            StartError::Timeout { id, apic_id } => {
-                write!(f, "cpu {id}: apic {apic_id} didn't start")
-            }
-        }
-    }
-}
-
-impl error::Error for DiscoveryError {}
-
-impl error::Error for StartError {}
 
 /// Enumerates the processors through UEFI's MP Services protocol.
 ///

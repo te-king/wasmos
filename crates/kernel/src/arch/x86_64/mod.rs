@@ -1,5 +1,6 @@
-use core::fmt::{self, Display};
+use core::fmt::Display;
 
+use thiserror::Error;
 use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
@@ -85,32 +86,13 @@ fn bsp_main(
 }
 
 /// Why the kernel failed.
+#[derive(Debug, Error)]
 enum KernelError {
-    /// The application processors couldn't all be started.
-    Start(smp::StartError),
+    #[error(transparent)]
+    Start(#[from] smp::StartError),
     /// A guest failed, trapping or failing to load.
-    Guest(wasmi::Error),
-}
-
-impl From<smp::StartError> for KernelError {
-    fn from(err: smp::StartError) -> Self {
-        KernelError::Start(err)
-    }
-}
-
-impl From<wasmi::Error> for KernelError {
-    fn from(err: wasmi::Error) -> Self {
-        KernelError::Guest(err)
-    }
-}
-
-impl Display for KernelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KernelError::Start(err) => write!(f, "{err}"),
-            KernelError::Guest(err) => write!(f, "guest: {err}"),
-        }
-    }
+    #[error("guest: {0}")]
+    Guest(#[from] wasmi::Error),
 }
 
 /// Where each application processor goes once it has entered the kernel.
