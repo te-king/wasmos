@@ -22,7 +22,7 @@ use uefi::mem::memory_map::MemoryType;
 use x86_64::instructions::interrupts;
 
 use super::{
-    cpu::{self, CpuId},
+    cpu::{self, CpuId, Local},
     gdt, int, mem, stack,
 };
 use crate::log;
@@ -34,11 +34,11 @@ pub struct BootServices(());
 pub struct Heap<R>(R);
 
 /// This processor has its own descriptor table and task state segment, and
-/// its per-CPU block exists, so `cpu::with` is sound.
-pub struct PerCpu<R>(R);
+/// its per-CPU block exists: the token holds the proof, a [`Local`].
+pub struct PerCpu<R>(R, Local);
 
 /// Interrupts are configured and enabled on this processor.
-pub struct Interrupts<R>(R);
+pub struct Interrupts<R>(R, Local);
 
 /// The bootstrap processor, which the firmware runs the kernel on.
 pub struct Bsp(());
@@ -65,7 +65,7 @@ impl Role for Ap {
 
 /// This processor's local APIC timer drives the kernel's clock
 /// ([`crate::timer`]). Only the bootstrap processor gets here.
-pub struct Clock(());
+pub struct Clock(Local);
 
 impl BootServices {
     /// The first stage.
@@ -139,10 +139,9 @@ impl<R: Role> Heap<R> {
         // that would name the old selectors isn't loaded until
         // `enable_interrupts`.
         unsafe { gdt::load_own() };
-        // SAFETY: The heap is up, and consuming `Heap` means this runs once,
-        // before anything could call `cpu::with`.
-        unsafe { cpu::init(self.0.id(), int::local_apic()) };
-        PerCpu(self.0)
+        // SAFETY: The heap is up, and consuming `Heap` means this runs once.
+        let local = unsafe { cpu::init(self.0.id(), int::local_apic()) };
+        PerCpu(self.0, local)
     }
 }
 
@@ -154,12 +153,11 @@ impl<R: Role> PerCpu<R> {
     /// interrupt stacks, which is why this needs `PerCpu`.
     pub fn enable_interrupts(self) -> Interrupts<R> {
         int::install_interrupt_table();
-        // SAFETY: The per-CPU block that the handlers reach through
-        // `cpu::with` exists, and the IDT is loaded before any source of
-        // interrupts is enabled.
-        unsafe { int::install_local_apic() };
+        // SAFETY: The IDT is loaded before any source of interrupts is
+        // enabled, and the per-CPU block that the handlers assume exists.
+        unsafe { int::install_local_apic(self.1) };
         interrupts::enable();
-        Interrupts(self.0)
+        Interrupts(self.0, self.1)
     }
 }
 
@@ -176,7 +174,14 @@ impl Interrupts<Bsp> {
     pub fn start_clock(self) -> Clock {
         // SAFETY: Interrupts are set up on this processor, so the timer
         // handler has its interrupt table entry and per-CPU block.
-        unsafe { int::start_timer() };
-        Clock(())
+        unsafe { int::start_timer(self.1) };
+        Clock(self.1)
+    }
+}
+
+impl Clock {
+    /// This processor's proof of its per-CPU block.
+    pub(super) fn local(&self) -> Local {
+        self.0
     }
 }

@@ -76,7 +76,7 @@ finish(executor::block_on(async {
 - Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
 - `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
-- `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
+- Reaching a CPU's block before `cpu::init` on that CPU is undefined behaviour, so safe code can only do it with the `Local` that `init` returns (see Per-CPU data).
 - The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 340 KiB of stack, so staying on it silently corrupted the heap.
 - Stacks (`stack.rs`) are 1 MiB (`KERNEL_SIZE`) on every processor. `stack::leak` returns a `Top`, which isn't `Copy`, so each stack has one user, and `stack::run_on` can safely switch to it. Nothing guards their bottoms yet: that needs the kernel to own the page tables, which OVMF maps read-only.
 - Tokens carry a role, `Bsp` or `Ap`. `exit()` gives `Heap<Bsp>`; application processors run the same chain from `Heap<Ap>` to `Interrupts<Ap>`, started after `exit()`, so `trampoline::enter` makes their token (`Heap::application_processor(id)`, unsafe) and passes it to `ap_main`. The role holds the processor's `CpuId` (the BSP is `CpuId::BSP`), so `init_cpu` takes no argument. BSP-only steps exist only for `Bsp`: `on_kernel_stack` on `Heap<Bsp>`, `start_clock` on `Interrupts<Bsp>`, so an AP can't reach `Clock` at all.
@@ -90,7 +90,7 @@ finish(executor::block_on(async {
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
-- Access is only through `cpu::with(|cpu| ...)`, which disables interrupts and, being a closure, can't be held across an `.await`.
+- Access needs a `cpu::Local`, the proof that this processor's block exists, which `cpu::init` returns and the `PerCpu`/`Interrupts`/`Clock` tokens carry. It is `Copy` but not `Send`, since it only holds on the processor that made it. `local.with(|cpu| ...)` disables interrupts and, being a closure, can't be held across an `.await`; `local.with_lapic` is the one place that borrows the LAPIC. Interrupt and exception handlers, which can't be handed one, use `unsafe { Local::assume() }`, sound because the IDT is only loaded after `init_cpu`.
 - The block's contents need not be `Send`/`Sync`. The LAPIC handle (x2apic's `LocalApic` is deliberately `!Send`) lives there.
 
 ### Descriptor tables and exceptions (`gdt.rs`, `exception.rs`)

@@ -15,7 +15,7 @@ use x86_64::{
 };
 
 use super::{
-    cpu,
+    cpu::Local,
     gdt::{self, InterruptStack},
 };
 use crate::logln;
@@ -61,9 +61,9 @@ impl fmt::Display for Fault {
 
 /// Panics with `fault`, naming the processor it happened on.
 fn fatal(fault: Fault) -> ! {
-    // The interrupt table is only loaded after `cpu::init` (it takes the
-    // `PerCpu` token), so any exception that gets here can use `cpu::with`.
-    let id = cpu::with(|cpu| cpu.id);
+    // SAFETY: The interrupt table is only loaded after `cpu::init`
+    // (`enable_interrupts` takes the `PerCpu` token).
+    let id = unsafe { Local::assume() }.id();
     panic!("cpu {id}: {fault}")
 }
 
