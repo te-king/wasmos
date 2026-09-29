@@ -18,7 +18,7 @@ use uart_16550::{Config, Uart16550Tty};
 use uefi::mem::memory_map::MemoryType;
 use x86_64::instructions::interrupts;
 
-use super::{cpu, int, mem};
+use super::{cpu, gdt, int, mem, stack};
 use crate::log;
 
 /// Boot services are available.
@@ -27,7 +27,8 @@ pub struct BootServices(());
 /// Boot services have been exited. The serial log and the full heap are up.
 pub struct Heap(());
 
-/// This processor's per-CPU block exists, so `cpu::with` is sound.
+/// This processor has its own descriptor table and task state segment, and
+/// its per-CPU block exists, so `cpu::with` is sound.
 pub struct PerCpu(());
 
 /// Interrupts are configured and enabled on this processor.
@@ -47,14 +48,19 @@ impl BootServices {
         BootServices(())
     }
 
-    /// Exits boot services, masks the legacy PIC, then brings up the serial
-    /// log and gives all conventional memory to the allocator.
+    /// Exits boot services with interrupts disabled, masks the legacy PIC,
+    /// then brings up the serial log and gives all conventional memory to
+    /// the allocator.
     pub fn exit(self) -> Heap {
         // SAFETY: Consuming the token means nothing can use boot services
         // afterwards, and nothing borrowing it can still be alive. Code that
         // borrows it (like `smp::discover`) closes any protocol it opens.
         let memory_map =
             unsafe { uefi::boot::exit_boot_services(Some(MemoryType::RUNTIME_SERVICES_DATA)) };
+        // The firmware's interrupt table stays loaded until `enable_interrupts`
+        // replaces it, and it names the firmware's selectors, which
+        // `init_cpu` replaces first.
+        interrupts::disable();
 
         // SAFETY: With boot services gone, nothing else drives the PICs.
         unsafe { int::disable_legacy_pic() };
@@ -71,6 +77,18 @@ impl BootServices {
 }
 
 impl Heap {
+    /// Continues on a fresh kernel stack, for good.
+    ///
+    /// The firmware's stack is too small for the kernel (128 KiB under
+    /// OVMF, where running a guest takes about 340 KiB) and has nothing
+    /// guarding its bottom, below which the allocator may have claimed
+    /// memory: overflowing it silently corrupts the heap. Application
+    /// processors start on a kernel stack, so only the bootstrap processor
+    /// needs this.
+    pub fn on_kernel_stack(self, f: impl FnOnce(Heap) -> !) -> ! {
+        stack::run_on(stack::leak::<{ stack::KERNEL_SIZE }>(), move || f(self))
+    }
+
     /// The first stage on an application processor, which is only started
     /// after the bootstrap processor has exited boot services.
     ///
@@ -81,8 +99,14 @@ impl Heap {
         Heap(())
     }
 
-    /// Sets up this processor's per-CPU block, including its local APIC.
+    /// Gives this processor its own descriptor table and task state
+    /// segment, then sets up its per-CPU block, including its local APIC.
     pub fn init_cpu(self, id: u32) -> PerCpu {
+        // SAFETY: The heap is up, this is 64-bit ring 0 with interrupts
+        // disabled (by `exit`, or the trampoline), and the interrupt table
+        // that would name the old selectors isn't loaded until
+        // `enable_interrupts`.
+        unsafe { gdt::load_own() };
         // SAFETY: The heap is up, and consuming `Heap` means this runs once,
         // before anything could call `cpu::with`.
         unsafe { cpu::init(id, int::local_apic()) };
@@ -93,6 +117,9 @@ impl Heap {
 impl PerCpu {
     /// Loads the interrupt table, enables the local APIC with its timer
     /// stopped, and enables interrupts.
+    ///
+    /// The table's gates use this processor's descriptor table and
+    /// interrupt stacks, which is why this needs `PerCpu`.
     pub fn enable_interrupts(self) -> Interrupts {
         int::install_interrupt_table();
         // SAFETY: The per-CPU block that the handlers reach through

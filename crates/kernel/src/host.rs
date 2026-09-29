@@ -3,10 +3,16 @@
 //! Bad input from a guest traps the guest (an `Err` from the host function)
 //! rather than panicking the kernel.
 
+use core::iter;
+
 use wasmi::{Caller, Engine, Error, Extern, Linker, TrapCode};
 use wasmos_abi as abi;
 
 use crate::log;
+
+/// The most text logged under one hold of the log's lock, which also holds
+/// off interrupts. At least 4 bytes, so a piece always fits a character.
+const PIECE: usize = 256;
 
 /// A linker with every host function defined.
 pub fn linker<T: 'static>(engine: &Engine) -> Result<Linker<T>, Error> {
@@ -30,6 +36,15 @@ fn print<T: 'static>(caller: Caller<'_, T>, ptr: u32, len: u32) -> Result<(), Er
     let text = core::str::from_utf8(bytes)
         .map_err(|_| Error::new("wasmos_print: text is not valid UTF-8"))?;
 
-    log!("{}", text);
+    pieces(text, PIECE).for_each(|piece| log!("{piece}"));
     Ok(())
+}
+
+/// `text` split at character boundaries into pieces of at most `max` bytes.
+fn pieces(text: &str, max: usize) -> impl Iterator<Item = &str> {
+    iter::successors(
+        Some(text.split_at(text.floor_char_boundary(max))),
+        move |(_, rest)| (!rest.is_empty()).then(|| rest.split_at(rest.floor_char_boundary(max))),
+    )
+    .map(|(piece, _)| piece)
 }

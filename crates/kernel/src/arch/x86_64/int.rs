@@ -10,7 +10,7 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
 };
 
-use super::cpu;
+use super::{cpu, exception};
 use crate::logln;
 
 #[repr(u8)]
@@ -132,35 +132,23 @@ pub unsafe fn disable_legacy_pic() {
     }
 }
 
-/// The interrupt table defines a set of functions that get called when
-/// an interrupt is triggered.
+/// Every processor's interrupt table: the exception handlers, plus the
+/// local APIC's interrupts.
 static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
-    let mut idt = InterruptDescriptorTable::new();
-    idt.double_fault.set_handler_fn(double_fault_handler);
-    idt.breakpoint.set_handler_fn(breakpoint_handler);
-    idt[InterruptIndex::Timer as u8].set_handler_fn(timer_handler);
-    idt[InterruptIndex::Error as u8].set_handler_fn(error_handler);
-    idt[InterruptIndex::Spurious as u8].set_handler_fn(spurious_handler);
+    let mut idt = exception::table();
+    exception::gate(&mut idt[InterruptIndex::Timer as u8], timer_handler);
+    exception::gate(&mut idt[InterruptIndex::Error as u8], error_handler);
+    exception::gate(&mut idt[InterruptIndex::Spurious as u8], spurious_handler);
     idt
 });
 
-/// Installs the default interrupt table for the current processor.
+/// Loads the interrupt table on the current processor.
+///
+/// Its gates run handlers on the kernel's code segment and the task state
+/// segment's interrupt stacks, so it takes the `PerCpu` stage's word (see
+/// `boot`) that this processor has its own descriptor table loaded.
 pub fn install_interrupt_table() {
     INTERRUPT_TABLE.load();
-}
-
-extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) -> ! {
-    panic!(
-        "EXCEPTION: DOUBLE FAULT\n{:#?}\n{}",
-        stack_frame, error_code
-    );
-}
-
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    logln!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
@@ -169,14 +157,14 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn error_handler(stack_frame: InterruptStackFrame) {
-    logln!("ERROR:\n{:#?}", stack_frame);
+    logln!("ERROR:\n{stack_frame:#?}");
     end_of_interrupt();
 }
 
 extern "x86-interrupt" fn spurious_handler(stack_frame: InterruptStackFrame) {
     // No end-of-interrupt: a spurious interrupt isn't marked in service, so
     // an EOI here would retire some other interrupt instead.
-    logln!("SPURIOUS:\n{:#?}", stack_frame);
+    logln!("SPURIOUS:\n{stack_frame:#?}");
 }
 
 /// Tells the current processor's local APIC that the interrupt being handled

@@ -7,7 +7,6 @@
 //! [`enter`] on a fresh stack. Everything it needs is in a [`Handoff`] that
 //! the bootstrap processor writes into the same page before each start.
 
-use alloc::boxed::Box;
 use core::{
     arch::global_asm,
     mem::offset_of,
@@ -21,18 +20,18 @@ use uefi::{
 };
 use x86_64::{
     VirtAddr,
-    instructions::tables::{lgdt, sgdt},
     registers::{
         control::{Cr0, Cr3, Cr4, Cr4Flags},
         model_specific::{Efer, EferFlags},
-        segmentation::{CS, DS, ES, SS, Segment, SegmentSelector},
     },
     structures::{DescriptorTablePointer, gdt::DescriptorFlags},
 };
 
 use super::{
     boot::{BootServices, Heap},
+    gdt,
     mem::PAGE_SIZE,
+    stack,
 };
 
 /// Where the [`Handoff`] sits in the trampoline page, after the code.
@@ -43,12 +42,6 @@ const _: () = assert!(HANDOFF + size_of::<Handoff>() <= PAGE_SIZE);
 const CODE32: u16 = 0x08;
 const DATA: u16 = 0x10;
 const CODE64: u16 = 0x18;
-
-/// Each processor's kernel stack. They are never freed.
-const STACK_SIZE: usize = 256 * 1024;
-
-#[repr(C, align(16))]
-struct Stack([u8; STACK_SIZE]);
 
 /// A far pointer (`m16:32`), the operand of an indirect far jump.
 #[derive(Clone, Copy)]
@@ -79,9 +72,6 @@ struct Handoff {
     // Read by `enter`.
     id: u32,
     main: fn(Heap, u32) -> !,
-    kernel_gdt: DescriptorTablePointer,
-    code_selector: SegmentSelector,
-    data_selector: SegmentSelector,
     /// Set once the processor no longer needs this handoff.
     arrived: AtomicBool,
 }
@@ -171,14 +161,16 @@ pub struct Trampoline {
 impl Trampoline {
     /// Reserves a page below 1 MiB and copies the trampoline code into it.
     ///
-    /// The page is loader data, which the allocator never claims, so it
-    /// stays reserved after boot services are exited.
+    /// The page is loader code, which the allocator never claims, so it
+    /// stays reserved after boot services are exited. It has to be code
+    /// rather than data: the trampoline keeps running from it once paging
+    /// is on, and firmware may map loader data non-executable.
     pub fn reserve(_: &BootServices) -> uefi::Result<Self> {
         // A startup IPI's vector is the page number, so the page must end
         // below 1 MiB.
         let page = boot::allocate_pages(
             AllocateType::MaxAddress(0xF_FFFF),
-            MemoryType::LOADER_DATA,
+            MemoryType::LOADER_CODE,
             1,
         )?;
         let start = &raw const wasmos_trampoline_start;
@@ -217,9 +209,6 @@ impl Trampoline {
         let cr3 = page_table.start_address().as_u64();
         assert!(cr3 < 1 << 32, "page tables are out of 32-bit reach");
 
-        let stack = Box::leak(Box::<Stack>::new_uninit());
-        let stack_top = stack.as_mut_ptr().wrapping_add(1) as u64;
-
         let handoff = Handoff {
             gdt: [
                 0,
@@ -240,13 +229,10 @@ impl Trampoline {
             cr4: Cr4::read_raw() & !Cr4Flags::PCID.bits(),
             // LMA is read-only: the processor sets it when paging comes on.
             efer: Efer::read_raw() & !EferFlags::LONG_MODE_ACTIVE.bits(),
-            stack_top,
+            stack_top: stack::leak::<{ stack::KERNEL_SIZE }>().into_addr().as_u64(),
             enter,
             id,
             main,
-            kernel_gdt: sgdt(),
-            code_selector: CS::get_reg(),
-            data_selector: SS::get_reg(),
             arrived: AtomicBool::new(false),
         };
         // SAFETY: The handoff fits in the page (checked at compile time), and
@@ -280,29 +266,13 @@ unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     // Everything is copied out before signalling arrival, since the
     // bootstrap processor can rewrite the handoff as soon as it sees it.
     // SAFETY: The trampoline passes the handoff that `prepare` wrote.
-    let (id, main, gdt, code, data) = unsafe {
-        let handoff = &*handoff;
-        (
-            handoff.id,
-            handoff.main,
-            handoff.kernel_gdt,
-            handoff.code_selector,
-            handoff.data_selector,
-        )
-    };
+    let (id, main) = unsafe { ((*handoff).id, (*handoff).main) };
 
-    // Switch to the bootstrap processor's descriptor table, so that this
-    // processor uses the same selectors as the interrupt table's entries.
-    // SAFETY: That table is the firmware's, outside the conventional memory
-    // the allocator claims, and its selectors are the flat 64-bit segments
-    // the bootstrap processor is running on.
-    unsafe {
-        lgdt(&gdt);
-        CS::set_reg(code);
-        SS::set_reg(data);
-        DS::set_reg(data);
-        ES::set_reg(data);
-    }
+    // The descriptor table in use is the handoff's, so switch to one that
+    // stays put until this processor gets its own in `init_cpu`.
+    // SAFETY: The trampoline left this processor in 64-bit ring 0 with
+    // interrupts disabled, and no interrupt table is loaded yet.
+    unsafe { gdt::load_boot() };
 
     // SAFETY: The handoff is still valid, and `arrived` is atomic.
     unsafe { &(*handoff).arrived }.store(true, Ordering::Release);

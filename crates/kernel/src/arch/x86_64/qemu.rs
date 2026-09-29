@@ -8,9 +8,8 @@ pub enum QemuExitCode {
 }
 
 pub fn exit_qemu(exit_code: QemuExitCode) {
-    let mut port = Port::new(0xf4);
-
-    unsafe {
-        port.write(exit_code as u32);
-    }
+    // SAFETY: The runner puts QEMU's isa-debug-exit device at port 0xf4,
+    // where this write ends the emulator. No standard device lives there
+    // on other machines.
+    unsafe { Port::new(0xf4).write(exit_code as u32) }
 }
