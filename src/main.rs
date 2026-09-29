@@ -7,11 +7,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use tempfile::TempDir;
+use wasmos_abi::qemu;
 
-// QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
-// what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
-const QEMU_EXIT_SUCCESS: i32 = (0x10 << 1) | 1;
-const QEMU_EXIT_FAILED: i32 = (0x11 << 1) | 1;
+// What QEMU exits with once the kernel reports through the debug-exit device.
+const QEMU_EXIT_SUCCESS: i32 = qemu::status(qemu::SUCCESS);
+const QEMU_EXIT_FAILED: i32 = qemu::status(qemu::FAILURE);
 
 // How long QEMU may run before it is killed. Override (in seconds) with
 // `WASMOS_TIMEOUT`; a value of 0 disables the timeout.
@@ -53,7 +53,8 @@ fn boot_drive(kernel: &Path) -> Result<TempDir> {
 fn qemu_args(code: &Path, vars: &Path, drive: &Path) -> Vec<String> {
     format!(
         "-nodefaults -display none -serial stdio -smp {CPUS} -no-reboot \
-         -device isa-debug-exit,iobase=0xf4,iosize=0x04"
+         -device isa-debug-exit,iobase={:#x},iosize=0x04",
+        qemu::PORT
     )
     .split_whitespace()
     .map(String::from)

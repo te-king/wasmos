@@ -749,6 +749,7 @@ dependencies = [
  "kernel",
  "ovmf-prebuilt",
  "tempfile",
+ "wasmos-abi",
 ]
 
 [[package]]
