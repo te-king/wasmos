@@ -7,12 +7,10 @@ use crate::arch::{self, Console};
 /// The kernel log's port: installed once, then locked for each write.
 static STDIO_PORT: Once<Mutex<Console>> = Once::new();
 
-/// Installs a serial port as the kernel log, or hands it back if one is
-/// already installed.
-pub fn install_stdio_port(port: Console) -> Result<(), Console> {
-    let mut port = Some(port);
-    STDIO_PORT.call_once(|| Mutex::new(port.take().expect("`call_once` runs this at most once")));
-    port.map_or(Ok(()), Err)
+/// Installs `port` as the kernel log. Only the first port counts, and the
+/// boot sequence only installs one (`exit` consumes its token).
+pub fn install(port: Console) {
+    STDIO_PORT.call_once(|| Mutex::new(port));
 }
 
 #[doc(hidden)]
@@ -62,9 +60,6 @@ macro_rules! log {
 /// variables (`logln!("{x}")`).
 #[macro_export]
 macro_rules! logln {
-    () => {
-        $crate::log!("\n")
-    };
     ($($arg:tt)*) => {
         $crate::log!("{}\n", ::core::format_args!($($arg)*))
     };
