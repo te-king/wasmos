@@ -192,8 +192,8 @@ impl Trampoline {
         let start = &raw const wasmos_trampoline_start;
         let len = offset_of_label(&raw const wasmos_trampoline_end);
         assert!(len <= HANDOFF, "trampoline code overlaps its handoff");
-        // Zeroing the page makes the handoff's `arrived` a valid `false`
-        // before the first `prepare`.
+        // Zeroed, so the page holds nothing but the code until a launch
+        // writes its handoff.
         // SAFETY: The page was just allocated, and the code is `len` bytes
         // of the kernel image, which fit in front of the handoff.
         unsafe {
@@ -203,19 +203,13 @@ impl Trampoline {
         Ok(Trampoline { page })
     }
 
-    /// The startup IPI vector that starts a processor in the trampoline.
-    pub fn vector(&self) -> u8 {
-        (self.address() / PAGE_SIZE as u64) as u8
-    }
-
     /// Prepares the trampoline to start processor `id`, which will run
     /// `main` on a new stack with this processor's paging and segments.
     ///
-    /// Must only be called while no processor is running the trampoline:
-    /// before the first start, or once the last one has [`arrived`].
-    ///
-    /// [`arrived`]: Trampoline::arrived
-    pub fn prepare(&mut self, id: CpuId, main: fn(Heap<Ap>) -> !) {
+    /// The launch takes the trampoline, and only gives it back once the
+    /// processor has let go of it ([`Launch::land`]), so nothing can rewrite
+    /// the handoff while a processor might still read it.
+    pub fn launch(self, id: CpuId, main: fn(Heap<Ap>) -> !) -> Launch {
         let handoff = Handoff::new(
             self.address(),
             ControlRegisters::read().for_startup(),
@@ -224,17 +218,9 @@ impl Trampoline {
             main,
         );
         // SAFETY: The handoff fits in the page (checked at compile time), and
-        // the caller guarantees no processor is reading the old one.
+        // owning the trampoline means no processor is reading the old one.
         unsafe { self.handoff().write(handoff) };
-    }
-
-    /// Whether the processor last prepared for has entered the kernel and
-    /// let go of the trampoline.
-    pub fn arrived(&self) -> bool {
-        // SAFETY: The handoff is in the page, and `arrived` is either zeroed
-        // or written by `prepare`, so it holds a valid `bool`. Once a
-        // processor could be running, it is only accessed atomically.
-        unsafe { (*self.handoff()).arrived.load(Ordering::Acquire) }
+        Launch(self)
     }
 
     fn address(&self) -> u64 {
@@ -243,6 +229,32 @@ impl Trampoline {
 
     fn handoff(&self) -> *mut Handoff {
         self.page.as_ptr().wrapping_add(HANDOFF).cast()
+    }
+}
+
+/// A trampoline prepared to start one processor, which may be running it.
+pub struct Launch(Trampoline);
+
+impl Launch {
+    /// The startup IPI vector that starts the processor in the trampoline.
+    pub fn vector(&self) -> u8 {
+        (self.0.address() / PAGE_SIZE as u64) as u8
+    }
+
+    /// Whether the processor has entered the kernel and let go of the
+    /// trampoline.
+    pub fn arrived(&self) -> bool {
+        // SAFETY: `launch` wrote the handoff, so `arrived` holds a valid
+        // `bool`, and since the processor could be running, it is only
+        // accessed atomically.
+        unsafe { (*self.0.handoff()).arrived.load(Ordering::Acquire) }
+    }
+
+    /// The trampoline back, for the next launch, if the processor has let
+    /// go of it. A processor that hasn't might still turn up and read its
+    /// handoff, so its trampoline can never be used again.
+    pub fn land(self) -> Option<Trampoline> {
+        self.arrived().then_some(self.0)
     }
 }
 

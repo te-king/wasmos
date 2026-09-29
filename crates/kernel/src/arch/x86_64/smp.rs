@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 use core::{error, fmt, future, iter};
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use uefi::{
     boot,
     proto::pi::mp::{MpServices, ProcessorInformation},
@@ -184,36 +184,41 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
 pub async fn start(
     clock: &mut Clock,
     processors: &Processors,
-    mut trampoline: Trampoline,
+    trampoline: Trampoline,
     main: fn(Heap<Ap>) -> !,
 ) -> Result<(), StartError> {
     let local = clock.local();
-    let mut ticks = timer::ticks(clock);
     let enabled = (1..)
         .map(CpuId::nth)
         .zip(&processors.aps)
         .filter(|(_, ap)| ap.is_enabled && ap.is_healthy);
-    for (id, ap) in enabled {
-        start_one(local, &mut ticks, &mut trampoline, id, ap, main).await?;
-    }
-    Ok(())
+    // Each start hands the trampoline and the tick stream on to the next.
+    stream::iter(enabled)
+        .map(Ok)
+        .try_fold(
+            (trampoline, timer::ticks(clock)),
+            |(trampoline, mut ticks), (id, ap)| async move {
+                let trampoline = start_one(local, &mut ticks, trampoline, id, ap, main).await?;
+                Ok((trampoline, ticks))
+            },
+        )
+        .await
+        .map(drop)
 }
 
-/// Starts one processor with the INIT, startup, startup IPI sequence.
-///
-/// On a timeout, the trampoline must not be prepared again: the processor
-/// might still arrive and read its handoff.
+/// Starts one processor with the INIT, startup, startup IPI sequence, and
+/// gives the trampoline back once the processor has let go of it.
 async fn start_one(
     local: Local,
     ticks: &mut Ticks<'_>,
-    trampoline: &mut Trampoline,
+    trampoline: Trampoline,
     id: CpuId,
     ap: &Processor,
     main: fn(Heap<Ap>) -> !,
-) -> Result<(), StartError> {
+) -> Result<Trampoline, StartError> {
     let apic_id = ap.apic_id;
     let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;
-    trampoline.prepare(id, main);
+    let launch = trampoline.launch(id, main);
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
@@ -223,13 +228,13 @@ async fn start_one(
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for periods in [1, START_TIMEOUT] {
-        // SAFETY: `prepare` put the trampoline in the page at `vector`.
-        unsafe { int::send_startup(local, dest, trampoline.vector()) };
-        if wait_until(ticks, periods, || trampoline.arrived()).await {
-            return Ok(());
+        // SAFETY: `launch` put the trampoline in the page at `vector`.
+        unsafe { int::send_startup(local, dest, launch.vector()) };
+        if wait_until(ticks, periods, || launch.arrived()).await {
+            break;
         }
     }
-    Err(StartError::Timeout { id, apic_id })
+    launch.land().ok_or(StartError::Timeout { id, apic_id })
 }
 
 /// Waits for at least `periods` full timer periods.
