@@ -22,24 +22,30 @@ static ALLOCATOR: TalcLock<spin::Mutex<()>, Claim> =
     // to itself for the life of the kernel.
     TalcLock::new(unsafe { Claim::array(&raw mut EARLY_HEAP) });
 
-/// Register the memory map with the memory allocator
+/// Gives the allocator every free region in `memory_map`.
 ///
 /// # Safety
-/// This function assumes all conventional sections in the memory map
-/// are available for the allocator, and that the memory map is valid.
-/// This function should be called immediately after creating the memory map to reduce
-/// the chance the memory layout has changed.
+/// `memory_map` must be the one returned by exiting boot services, so that
+/// its conventional regions are free, and nothing may have used them since.
 pub unsafe fn install_memory_map(memory_map: MemoryMapOwned) {
-    let conventional = memory_map
-        .entries()
-        .filter(|m| m.ty == MemoryType::CONVENTIONAL)
-        .filter(|m| m.phys_start != 0);
-
-    for region in conventional {
-        let base = region.phys_start as *mut u8;
-        let size = region.page_count as usize * PAGE_SIZE;
+    free_regions(&memory_map).for_each(|(base, size)| {
         // SAFETY: The caller guarantees the conventional regions are free,
         // so nothing else uses this memory while the allocator owns it.
         unsafe { ALLOCATOR.lock().claim(base, size) }.unwrap();
-    }
+    });
+}
+
+/// The start and size of each region in `memory_map` that the allocator can
+/// have: conventional memory, except a region at address 0, where a
+/// pointer would be null.
+fn free_regions(memory_map: &MemoryMapOwned) -> impl Iterator<Item = (*mut u8, usize)> + '_ {
+    memory_map
+        .entries()
+        .filter(|region| region.ty == MemoryType::CONVENTIONAL && region.phys_start != 0)
+        .map(|region| {
+            (
+                region.phys_start as *mut u8,
+                region.page_count as usize * PAGE_SIZE,
+            )
+        })
 }
