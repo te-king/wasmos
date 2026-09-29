@@ -18,7 +18,7 @@ use uefi::{
 use super::{
     boot::{Ap, BootServices, Clock, Heap},
     cpu::{CpuId, Local},
-    int,
+    int::{self, Ipi},
     trampoline::Trampoline,
 };
 use crate::timer::{self, Ticks};
@@ -204,14 +204,14 @@ async fn start_one(
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
-    unsafe { int::send_init(local, dest) };
+    unsafe { int::send_ipi(local, dest, Ipi::Init) };
     // Intel asks for 10 ms here, about one timer period.
     sleep(ticks, 1).await;
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for periods in [1, START_TIMEOUT] {
         // SAFETY: `launch` put the trampoline in the page at `vector`.
-        unsafe { int::send_startup(local, dest, launch.vector()) };
+        unsafe { int::send_ipi(local, dest, Ipi::Startup(launch.vector())) };
         if wait_until(ticks, periods, || launch.arrived()).await {
             break;
         }

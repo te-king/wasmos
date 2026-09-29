@@ -98,29 +98,33 @@ fn has_x2apic() -> bool {
     __cpuid(1).ecx & (1 << 21) != 0
 }
 
-/// Sends an INIT IPI, which resets `dest` and leaves it waiting for a
-/// startup IPI.
-///
-/// # Safety
-/// `dest` must not be running anything: INIT stops it wherever it is.
-pub unsafe fn send_init(local: Local, dest: IpiDestination) {
-    // SAFETY: The caller guarantees that resetting `dest` is harmless.
-    local.with_lapic(|lapic| unsafe { lapic.send_init_ipi(dest.0) });
+/// The inter-processor interrupts that start a processor.
+#[derive(Clone, Copy)]
+pub enum Ipi {
+    /// Resets the processor and leaves it waiting for a startup IPI.
+    Init,
+    /// Starts a waiting processor in real mode at the start of page
+    /// `vector`.
+    Startup(u8),
 }
 
-/// Sends a startup IPI, which starts `dest` in real mode at the start of
-/// page `vector`, if it is waiting for one.
-///
-/// Everything written before this call is visible to `dest` when it starts.
+/// Sends `ipi` to `dest`. Everything written before this call is visible to
+/// `dest` when it starts.
 ///
 /// # Safety
-/// That page must hold code for a starting processor to run.
-pub unsafe fn send_startup(local: Local, dest: IpiDestination, vector: u8) {
+/// For `Init`, `dest` must not be running anything: INIT stops it wherever
+/// it is. For `Startup`, the page must hold code for a starting processor.
+pub unsafe fn send_ipi(local: Local, dest: IpiDestination, ipi: Ipi) {
     // In x2APIC mode the IPI is sent by a WRMSR, which doesn't wait for
     // earlier stores (such as the startup code's data) to become visible.
     fence(Ordering::SeqCst);
-    // SAFETY: The caller guarantees the page holds startup code.
-    local.with_lapic(|lapic| unsafe { lapic.send_sipi(vector, dest.0) });
+    // SAFETY: The caller guarantees `ipi` is harmless to `dest`.
+    local.with_lapic(|lapic| unsafe {
+        match ipi {
+            Ipi::Init => lapic.send_init_ipi(dest.0),
+            Ipi::Startup(vector) => lapic.send_sipi(vector, dest.0),
+        }
+    });
 }
 
 /// Masks every line of the legacy 8259 PICs, which the firmware may have
