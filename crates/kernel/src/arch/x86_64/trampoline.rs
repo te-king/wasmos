@@ -39,10 +39,25 @@ use super::{
 const HANDOFF: usize = 0x800;
 const _: () = assert!(HANDOFF + size_of::<Handoff>() <= PAGE_SIZE);
 
-/// Selectors into the trampoline's own descriptor table ([`Handoff::gdt`]).
-const CODE32: u16 = 0x08;
-const DATA: u16 = 0x10;
-const CODE64: u16 = 0x18;
+/// Positions in [`GDT`], the trampoline's own descriptor table.
+const CODE32: usize = 1;
+const DATA: usize = 2;
+const CODE64: usize = 3;
+
+/// Null, then flat 32-bit code, data and 64-bit code segments, each at its
+/// position, so a [`selector`] of the position names it.
+const GDT: [u64; 4] = {
+    let mut gdt = [0; 4];
+    gdt[CODE32] = DescriptorFlags::KERNEL_CODE32.bits();
+    gdt[DATA] = DescriptorFlags::KERNEL_DATA.bits();
+    gdt[CODE64] = DescriptorFlags::KERNEL_CODE64.bits();
+    gdt
+};
+
+/// The selector for position `index` of [`GDT`].
+const fn selector(index: usize) -> u16 {
+    (index * size_of::<u64>()) as u16
+}
 
 /// A far pointer (`m16:32`), the operand of an indirect far jump.
 #[derive(Clone, Copy)]
@@ -57,7 +72,7 @@ struct FarPointer {
 #[repr(C)]
 struct Handoff {
     // Read by the trampoline code.
-    /// Null, then flat 32-bit code, data and 64-bit code segments.
+    /// A copy of [`GDT`], which real mode can only reach within the page.
     gdt: [u64; 4],
     /// Loaded in real mode, which only reads the limit and 24 bits of base.
     gdt_pointer: DescriptorTablePointer,
@@ -131,7 +146,7 @@ global_asm!(
     "wasmos_trampoline_end:",
     gdt_pointer = const HANDOFF + offset_of!(Handoff, gdt_pointer),
     protected_mode = const HANDOFF + offset_of!(Handoff, protected_mode),
-    data = const DATA,
+    data = const selector(DATA),
     cr4 = const HANDOFF + offset_of!(Handoff, cr4),
     cr3 = const HANDOFF + offset_of!(Handoff, cr3),
     efer = const HANDOFF + offset_of!(Handoff, efer),
@@ -201,41 +216,13 @@ impl Trampoline {
     ///
     /// [`arrived`]: Trampoline::arrived
     pub fn prepare(&mut self, id: CpuId, main: fn(Heap<Ap>) -> !) {
-        let page = self.address();
-        let far = |label: *const u8, selector| FarPointer {
-            offset: (page + offset_of_label(label) as u64) as u32,
-            selector,
-        };
-        let (page_table, _) = Cr3::read();
-        let cr3 = page_table.start_address().as_u64();
-        assert!(cr3 < 1 << 32, "page tables are out of 32-bit reach");
-
-        let handoff = Handoff {
-            gdt: [
-                0,
-                DescriptorFlags::KERNEL_CODE32.bits(),
-                DescriptorFlags::KERNEL_DATA.bits(),
-                DescriptorFlags::KERNEL_CODE64.bits(),
-            ],
-            gdt_pointer: DescriptorTablePointer {
-                limit: (size_of::<[u64; 4]>() - 1) as u16,
-                base: VirtAddr::new(page + (HANDOFF + offset_of!(Handoff, gdt)) as u64),
-            },
-            protected_mode: far(&raw const wasmos_trampoline_protected, CODE32),
-            long_mode: far(&raw const wasmos_trampoline_long, CODE64),
-            cr0: Cr0::read_raw(),
-            cr3,
-            // PCIDs can only be enabled once long mode is active, and the
-            // kernel doesn't use them.
-            cr4: Cr4::read_raw() & !Cr4Flags::PCID.bits(),
-            // LMA is read-only: the processor sets it when paging comes on.
-            efer: Efer::read_raw() & !EferFlags::LONG_MODE_ACTIVE.bits(),
-            stack_top: stack::leak::<{ stack::KERNEL_SIZE }>().into_addr().as_u64(),
-            enter,
+        let handoff = Handoff::new(
+            self.address(),
+            ControlRegisters::read().for_startup(),
+            stack::leak::<{ stack::KERNEL_SIZE }>(),
             id,
             main,
-            arrived: AtomicBool::new(false),
-        };
+        );
         // SAFETY: The handoff fits in the page (checked at compile time), and
         // the caller guarantees no processor is reading the old one.
         unsafe { self.handoff().write(handoff) };
@@ -256,6 +243,77 @@ impl Trampoline {
 
     fn handoff(&self) -> *mut Handoff {
         self.page.as_ptr().wrapping_add(HANDOFF).cast()
+    }
+}
+
+/// The control registers a starting processor takes from the bootstrap
+/// processor.
+#[derive(Clone, Copy)]
+struct ControlRegisters {
+    cr0: u64,
+    cr3: u64,
+    cr4: u64,
+    efer: u64,
+}
+
+impl ControlRegisters {
+    /// This processor's.
+    fn read() -> Self {
+        ControlRegisters {
+            cr0: Cr0::read_raw(),
+            cr3: Cr3::read().0.start_address().as_u64(),
+            cr4: Cr4::read_raw(),
+            efer: Efer::read_raw(),
+        }
+    }
+
+    /// These registers as a processor that has yet to enter long mode can
+    /// load them, from 32-bit code.
+    fn for_startup(self) -> Self {
+        assert!(self.cr3 < 1 << 32, "page tables are out of 32-bit reach");
+        ControlRegisters {
+            // PCIDs can only be enabled once long mode is active, and the
+            // kernel doesn't use them.
+            cr4: self.cr4 & !Cr4Flags::PCID.bits(),
+            // LMA is read-only: the processor sets it when paging comes on.
+            efer: self.efer & !EferFlags::LONG_MODE_ACTIVE.bits(),
+            ..self
+        }
+    }
+}
+
+impl Handoff {
+    /// The handoff for the trampoline page at `page` to start processor
+    /// `id` with `registers`, running `main` on `stack`.
+    fn new(
+        page: u64,
+        registers: ControlRegisters,
+        stack: stack::Top,
+        id: CpuId,
+        main: fn(Heap<Ap>) -> !,
+    ) -> Self {
+        let far = |label: *const u8, index| FarPointer {
+            offset: (page + offset_of_label(label) as u64) as u32,
+            selector: selector(index),
+        };
+        Handoff {
+            gdt: GDT,
+            gdt_pointer: DescriptorTablePointer {
+                limit: (size_of_val(&GDT) - 1) as u16,
+                base: VirtAddr::new(page + (HANDOFF + offset_of!(Handoff, gdt)) as u64),
+            },
+            protected_mode: far(&raw const wasmos_trampoline_protected, CODE32),
+            long_mode: far(&raw const wasmos_trampoline_long, CODE64),
+            cr0: registers.cr0,
+            cr3: registers.cr3,
+            cr4: registers.cr4,
+            efer: registers.efer,
+            stack_top: stack.into_addr().as_u64(),
+            enter,
+            id,
+            main,
+            arrived: AtomicBool::new(false),
+        }
     }
 }
 
