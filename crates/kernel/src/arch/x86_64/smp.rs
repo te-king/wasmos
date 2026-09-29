@@ -218,7 +218,8 @@ async fn sleep(ticks: &mut Ticks<'_>, periods: u64) {
 /// `ticks`, which coalesces missed ticks: its first item can be one that
 /// happened before this was called.
 async fn wait_until(ticks: &mut Ticks<'_>, periods: u64, done: impl Fn() -> bool) -> bool {
-    let deadline = timer::after(timer::now(), periods);
+    // The period under way has partly gone already, so it doesn't count.
+    let deadline = timer::now() + periods + 1;
     done() || {
         ticks
             .any(|now| future::ready(now >= deadline || done()))
