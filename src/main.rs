@@ -2,11 +2,12 @@ use std::env::{self, VarError};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 use wasmos_abi::qemu;
 
 // What QEMU exits with once the kernel reports through the debug-exit device.
@@ -132,16 +133,12 @@ fn wait_with_timeout(child: &mut Child, timeout: Option<Duration>) -> Result<Exi
         return Ok(child.wait()?);
     };
 
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if Instant::now() >= deadline {
+    match child.wait_timeout(timeout)? {
+        Some(status) => Ok(status),
+        None => {
             child.kill()?;
             child.wait()?;
-            bail!("kernel timed out after {}s", timeout.as_secs());
+            bail!("kernel timed out after {}s", timeout.as_secs())
         }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }

@@ -12,6 +12,7 @@ ovmf-prebuilt = "0.2.9"
 tempfile = "3.27"
 anyhow = "1"
 wasmos-abi = { path = "crates/abi" }
+wait-timeout = "0.2.1"
 
 [build-dependencies]
 kernel = { path = "crates/kernel", artifact = "bin", target = "x86_64-unknown-uefi" }
