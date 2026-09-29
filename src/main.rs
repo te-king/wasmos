@@ -2,16 +2,17 @@ use std::env::{self, VarError};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
+use wasmos_abi::qemu;
 
-// QEMU's isa-debug-exit device exits with `(value << 1) | 1`, where `value` is
-// what the kernel writes to the port (see `QemuExitCode` in the kernel crate).
-const QEMU_EXIT_SUCCESS: i32 = (0x10 << 1) | 1;
-const QEMU_EXIT_FAILED: i32 = (0x11 << 1) | 1;
+// What QEMU exits with once the kernel reports through the debug-exit device.
+const QEMU_EXIT_SUCCESS: i32 = qemu::status(qemu::SUCCESS);
+const QEMU_EXIT_FAILED: i32 = qemu::status(qemu::FAILURE);
 
 // How long QEMU may run before it is killed. Override (in seconds) with
 // `WASMOS_TIMEOUT`; a value of 0 disables the timeout.
@@ -46,31 +47,26 @@ fn boot_drive(kernel: &Path) -> Result<TempDir> {
 
 /// QEMU's arguments for booting the drive in directory `drive`, with the
 /// OVMF images `code` and `vars`.
+///
+/// With `-no-reboot`, a reset stops QEMU rather than rebooting into the
+/// kernel again: on a triple fault (on any processor) the kernel can't report
+/// anything, and would otherwise boot in a loop until the timeout.
 fn qemu_args(code: &Path, vars: &Path, drive: &Path) -> Vec<String> {
-    [
-        "-nodefaults",
-        "-display",
-        "none",
-        "-serial",
-        "stdio",
-        "-smp",
-        CPUS,
-        // A reset stops QEMU rather than rebooting into the kernel again. On
-        // a triple fault (on any processor) the kernel can't report
-        // anything, and would otherwise boot in a loop until the timeout.
-        "-no-reboot",
-        "-device",
-        "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    ]
+    format!(
+        "-nodefaults -display none -serial stdio -smp {CPUS} -no-reboot \
+         -device isa-debug-exit,iobase={:#x},iosize=0x04",
+        qemu::PORT
+    )
+    .split_whitespace()
     .map(String::from)
-    .into_iter()
+    // Paths go in whole, since they may hold spaces. The drive is writable
+    // only because QEMU's IDE disks can't be read-only; the kernel never
+    // writes to it.
     .chain([
         "-drive".into(),
         pflash(code),
         "-drive".into(),
         pflash(vars),
-        // Writable only because QEMU's IDE disks can't be read-only. The
-        // kernel never writes to it.
         "-drive".into(),
         format!("format=raw,file=fat:rw:{}", drive.display()),
     ])
@@ -137,16 +133,12 @@ fn wait_with_timeout(child: &mut Child, timeout: Option<Duration>) -> Result<Exi
         return Ok(child.wait()?);
     };
 
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if Instant::now() >= deadline {
+    match child.wait_timeout(timeout)? {
+        Some(status) => Ok(status),
+        None => {
             child.kill()?;
             child.wait()?;
-            bail!("kernel timed out after {}s", timeout.as_secs());
+            bail!("kernel timed out after {}s", timeout.as_secs())
         }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }

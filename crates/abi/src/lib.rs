@@ -1,4 +1,4 @@
-//! The interface between the wasmos kernel and its wasm guests.
+//! The interfaces between the wasmos kernel, its wasm guests and its runner.
 //!
 //! The kernel defines these host functions and the guest library imports
 //! them. Guests declare imports with attributes, which need string literals,
@@ -15,6 +15,23 @@ pub const PRINT: &str = "wasmos_print";
 /// The function every guest exports and the kernel calls to run it:
 /// `main()`, taking and returning nothing.
 pub const ENTRY: &str = "main";
+
+/// QEMU's isa-debug-exit device, which the runner adds and the kernel ends a
+/// run through: writing a code to its port exits QEMU with status
+/// `(code << 1) | 1`.
+pub mod qemu {
+    /// The I/O port the runner puts the device at.
+    pub const PORT: u16 = 0xf4;
+    /// The code the kernel writes when it succeeded.
+    pub const SUCCESS: u32 = 0x10;
+    /// The code the kernel writes when it failed.
+    pub const FAILURE: u32 = 0x11;
+
+    /// QEMU's exit status once the kernel has written `code`.
+    pub const fn status(code: u32) -> i32 {
+        ((code << 1) | 1) as i32
+    }
+}
 
 /// Compares two strings at compile time, for checking import attributes.
 pub const fn same(a: &str, b: &str) -> bool {

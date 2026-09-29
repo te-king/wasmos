@@ -15,14 +15,14 @@ use crate::log;
 const PIECE: usize = 256;
 
 /// A linker with every host function defined.
-pub fn linker<T: 'static>(engine: &Engine) -> Result<Linker<T>, Error> {
+pub fn linker(engine: &Engine) -> Result<Linker<()>, Error> {
     let mut linker = Linker::new(engine);
-    linker.func_wrap(abi::MODULE, abi::PRINT, print::<T>)?;
+    linker.func_wrap(abi::MODULE, abi::PRINT, print)?;
     Ok(linker)
 }
 
 /// Writes UTF-8 text from guest memory to the kernel log.
-fn print<T: 'static>(caller: Caller<'_, T>, ptr: u32, len: u32) -> Result<(), Error> {
+fn print(caller: Caller<'_, ()>, ptr: u32, len: u32) -> Result<(), Error> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)

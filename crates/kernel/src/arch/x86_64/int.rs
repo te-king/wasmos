@@ -98,29 +98,33 @@ fn has_x2apic() -> bool {
     __cpuid(1).ecx & (1 << 21) != 0
 }
 
-/// Sends an INIT IPI, which resets `dest` and leaves it waiting for a
-/// startup IPI.
-///
-/// # Safety
-/// `dest` must not be running anything: INIT stops it wherever it is.
-pub unsafe fn send_init(local: Local, dest: IpiDestination) {
-    // SAFETY: The caller guarantees that resetting `dest` is harmless.
-    local.with_lapic(|lapic| unsafe { lapic.send_init_ipi(dest.0) });
+/// The inter-processor interrupts that start a processor.
+#[derive(Clone, Copy)]
+pub enum Ipi {
+    /// Resets the processor and leaves it waiting for a startup IPI.
+    Init,
+    /// Starts a waiting processor in real mode at the start of page
+    /// `vector`.
+    Startup(u8),
 }
 
-/// Sends a startup IPI, which starts `dest` in real mode at the start of
-/// page `vector`, if it is waiting for one.
-///
-/// Everything written before this call is visible to `dest` when it starts.
+/// Sends `ipi` to `dest`. Everything written before this call is visible to
+/// `dest` when it starts.
 ///
 /// # Safety
-/// That page must hold code for a starting processor to run.
-pub unsafe fn send_startup(local: Local, dest: IpiDestination, vector: u8) {
+/// For `Init`, `dest` must not be running anything: INIT stops it wherever
+/// it is. For `Startup`, the page must hold code for a starting processor.
+pub unsafe fn send_ipi(local: Local, dest: IpiDestination, ipi: Ipi) {
     // In x2APIC mode the IPI is sent by a WRMSR, which doesn't wait for
     // earlier stores (such as the startup code's data) to become visible.
     fence(Ordering::SeqCst);
-    // SAFETY: The caller guarantees the page holds startup code.
-    local.with_lapic(|lapic| unsafe { lapic.send_sipi(vector, dest.0) });
+    // SAFETY: The caller guarantees `ipi` is harmless to `dest`.
+    local.with_lapic(|lapic| unsafe {
+        match ipi {
+            Ipi::Init => lapic.send_init_ipi(dest.0),
+            Ipi::Startup(vector) => lapic.send_sipi(vector, dest.0),
+        }
+    });
 }
 
 /// Masks every line of the legacy 8259 PICs, which the firmware may have
@@ -138,8 +142,10 @@ pub unsafe fn disable_legacy_pic() {
 }
 
 /// Every processor's interrupt table: the exception handlers, plus the
-/// local APIC's interrupts.
-static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
+/// local APIC's interrupts. Its gates name the kernel's code segment and the
+/// task state segment's interrupt stacks, so a processor may only load it
+/// once it has its own descriptor table (see `boot::Heap::init_cpu`).
+pub static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = exception::table();
     exception::gate(&mut idt[InterruptIndex::Timer.vector()], timer_handler);
     exception::gate(&mut idt[InterruptIndex::Error.vector()], error_handler);
@@ -149,15 +155,6 @@ static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     );
     idt
 });
-
-/// Loads the interrupt table on the current processor.
-///
-/// Its gates run handlers on the kernel's code segment and the task state
-/// segment's interrupt stacks, so it takes the `PerCpu` stage's word (see
-/// `boot`) that this processor has its own descriptor table loaded.
-pub fn install_interrupt_table() {
-    INTERRUPT_TABLE.load();
-}
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     crate::timer::tick();
@@ -178,8 +175,8 @@ extern "x86-interrupt" fn spurious_handler(stack_frame: InterruptStackFrame) {
 /// Tells the current processor's local APIC that the interrupt being handled
 /// is finished, so it can deliver the next one.
 fn end_of_interrupt() {
-    // SAFETY: Handlers only run once the interrupt table is loaded, which is
-    // after `cpu::init` (`enable_interrupts` takes the `PerCpu` token).
+    // SAFETY: Handlers only run once the interrupt table is loaded, which
+    // `init_cpu` does after `cpu::init`.
     let local = unsafe { Local::assume() };
     // SAFETY: Only called at the end of handlers for interrupts that the
     // local APIC delivered (never for spurious interrupts; see above).

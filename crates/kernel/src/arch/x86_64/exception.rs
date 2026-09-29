@@ -64,10 +64,12 @@ impl fmt::Display for Fault {
     }
 }
 
-/// Panics with `fault`, naming the processor it happened on.
-fn fatal(fault: Fault) -> ! {
-    // SAFETY: The interrupt table is only loaded after `cpu::init`
-    // (`enable_interrupts` takes the `PerCpu` token).
+/// Panics with the [`Fault`] the processor reported, naming the processor
+/// it happened on.
+fn fatal(name: &'static str, frame: InterruptStackFrame, cause: Cause) -> ! {
+    let fault = Fault { name, frame, cause };
+    // SAFETY: The interrupt table is only loaded after `cpu::init` (see
+    // `boot::Heap::init_cpu`).
     let id = unsafe { Local::assume() }.id();
     panic!("cpu {id}: {fault}")
 }
@@ -79,6 +81,8 @@ fn fatal(fault: Fault) -> ! {
 /// - `fatal entry: "name"`: generated, panicking with a [`Fault`].
 /// - `fatal_code entry: "name"`: the same, for an exception with an error
 ///   code.
+/// - `diverging entry: "name"`: the same, for an exception the processor
+///   can't return from.
 /// - `custom entry`: written out below.
 macro_rules! exceptions {
     ($($kind:ident $entry:ident $(: $name:literal)? $(on $stack:ident)?,)*) => {
@@ -97,20 +101,17 @@ macro_rules! exceptions {
 macro_rules! exception_handler {
     (fatal $entry:ident $name:literal) => {
         extern "x86-interrupt" fn $entry(frame: InterruptStackFrame) {
-            fatal(Fault {
-                name: $name,
-                frame,
-                cause: Cause::Unknown,
-            })
+            fatal($name, frame, Cause::Unknown)
         }
     };
     (fatal_code $entry:ident $name:literal) => {
         extern "x86-interrupt" fn $entry(frame: InterruptStackFrame, code: u64) {
-            fatal(Fault {
-                name: $name,
-                frame,
-                cause: Cause::ErrorCode(code),
-            })
+            fatal($name, frame, Cause::ErrorCode(code))
+        }
+    };
+    (diverging $entry:ident $name:literal) => {
+        extern "x86-interrupt" fn $entry(frame: InterruptStackFrame) -> ! {
+            fatal($name, frame, Cause::Unknown)
         }
     };
     (custom $entry:ident) => {};
@@ -143,7 +144,7 @@ exceptions! {
     custom page_fault,
     fatal x87_floating_point: "x87 floating-point exception",
     fatal_code alignment_check: "alignment check",
-    custom machine_check on MachineCheck,
+    diverging machine_check: "machine check" on MachineCheck,
     fatal simd_floating_point: "SIMD floating-point exception",
     fatal virtualization: "virtualization exception",
     fatal_code cp_protection_exception: "control protection exception",
@@ -153,34 +154,17 @@ exceptions! {
 }
 
 extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    let cause = Cause::PageFault {
-        address: Cr2::read_raw(),
-        code,
-    };
-    fatal(Fault {
-        name: "page fault",
-        frame,
-        cause,
-    })
+    let address = Cr2::read_raw();
+    fatal("page fault", frame, Cause::PageFault { address, code })
 }
 
 extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, _: u64) -> ! {
-    let cause = Cause::DoubleFault {
-        last_page_fault: Cr2::read_raw(),
-    };
-    fatal(Fault {
-        name: "double fault",
+    let last_page_fault = Cr2::read_raw();
+    fatal(
+        "double fault",
         frame,
-        cause,
-    })
-}
-
-extern "x86-interrupt" fn machine_check(frame: InterruptStackFrame) -> ! {
-    fatal(Fault {
-        name: "machine check",
-        frame,
-        cause: Cause::Unknown,
-    })
+        Cause::DoubleFault { last_page_fault },
+    )
 }
 
 extern "x86-interrupt" fn breakpoint(frame: InterruptStackFrame) {

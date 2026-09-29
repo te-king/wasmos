@@ -1,6 +1,6 @@
 [package]
 name = "wasmos-abi"
-description = "The interface between the wasmos kernel and its wasm guests."
+description = "The interfaces between the wasmos kernel, its wasm guests and its runner."
 version = "0.1.0"
 edition = "2024"
 

@@ -1,5 +1,6 @@
-use core::fmt::{self, Display};
+use core::fmt::Display;
 
+use thiserror::Error;
 use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
@@ -66,12 +67,10 @@ fn bsp_main(
     processors: Result<smp::Processors, smp::DiscoveryError>,
     trampoline: uefi::Result<trampoline::Trampoline>,
 ) -> ! {
-    let interrupts = heap.init_cpu().enable_interrupts();
-    logln!("cpu {}: online", interrupts.id());
-    let mut clock = interrupts.start_clock();
+    let mut clock = heap.init_cpu().start_clock();
 
     match &processors {
-        Ok(processors) => log!("{}", smp::Listing(processors)),
+        Ok(processors) => log!("{processors}"),
         Err(err) => logln!("smp: {err}"),
     }
 
@@ -87,38 +86,18 @@ fn bsp_main(
 }
 
 /// Why the kernel failed.
+#[derive(Debug, Error)]
 enum KernelError {
-    /// The application processors couldn't all be started.
-    Start(smp::StartError),
+    #[error(transparent)]
+    Start(#[from] smp::StartError),
     /// A guest failed, trapping or failing to load.
-    Guest(wasmi::Error),
-}
-
-impl From<smp::StartError> for KernelError {
-    fn from(err: smp::StartError) -> Self {
-        KernelError::Start(err)
-    }
-}
-
-impl From<wasmi::Error> for KernelError {
-    fn from(err: wasmi::Error) -> Self {
-        KernelError::Guest(err)
-    }
-}
-
-impl Display for KernelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KernelError::Start(err) => write!(f, "{err}"),
-            KernelError::Guest(err) => write!(f, "guest: {err}"),
-        }
-    }
+    #[error("guest: {0}")]
+    Guest(#[from] wasmi::Error),
 }
 
 /// Where each application processor goes once it has entered the kernel.
 fn ap_main(heap: boot::Heap<boot::Ap>) -> ! {
-    let interrupts = heap.init_cpu().enable_interrupts();
-    logln!("cpu {}: online", interrupts.id());
+    heap.init_cpu();
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();

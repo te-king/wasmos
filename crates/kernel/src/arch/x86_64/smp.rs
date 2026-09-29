@@ -6,9 +6,10 @@
 //! [`Trampoline`].
 
 use alloc::vec::Vec;
-use core::{error, fmt, future, iter};
+use core::{fmt, future, iter};
 
 use futures_util::{StreamExt, TryStreamExt, stream};
+use thiserror::Error;
 use uefi::{
     boot,
     proto::pi::mp::{MpServices, ProcessorInformation},
@@ -17,7 +18,7 @@ use uefi::{
 use super::{
     boot::{Ap, BootServices, Clock, Heap},
     cpu::{CpuId, Local},
-    int,
+    int::{self, Ipi},
     trampoline::Trampoline,
 };
 use crate::timer::{self, Ticks};
@@ -46,27 +47,24 @@ pub struct Processors {
     pub aps: Vec<Processor>,
 }
 
-/// The processors as log lines: a summary, then one per processor, marking
-/// the bootstrap processor.
-pub struct Listing<'a>(pub &'a Processors);
-
 /// Why processor discovery failed.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum DiscoveryError {
-    /// The MP Services protocol is missing or one of its calls failed.
-    Firmware(uefi::Error),
-    /// The firmware didn't report exactly one bootstrap processor.
+    #[error("MP Services unavailable: {0:?}")]
+    Firmware(#[from] uefi::Error),
+    #[error("firmware reported {0} bootstrap processors")]
     BspCount(usize),
 }
 
 /// Why the application processors couldn't all be started.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum StartError {
-    /// No page below 1 MiB was free for the trampoline.
+    #[error("no page below 1 MiB for the trampoline: {0:?}")]
     Trampoline(uefi::Error),
     /// The local APIC can't address the processor in its current mode.
+    #[error("cpu {id}: apic {apic_id} can't be addressed")]
     Unaddressable { id: CpuId, apic_id: u64 },
-    /// The processor didn't enter the kernel in time.
+    #[error("cpu {id}: apic {apic_id} didn't start")]
     Timeout { id: CpuId, apic_id: u64 },
 }
 
@@ -83,11 +81,6 @@ impl Processors {
         self.iter()
             .filter(|&(id, ap)| id != CpuId::BSP && ap.is_enabled && ap.is_healthy)
     }
-
-    /// How many processors are enabled.
-    pub fn enabled(&self) -> usize {
-        self.iter().filter(|(_, cpu)| cpu.is_enabled).count()
-    }
 }
 
 impl From<&ProcessorInformation> for Processor {
@@ -100,12 +93,6 @@ impl From<&ProcessorInformation> for Processor {
             core: info.location.core,
             thread: info.location.thread,
         }
-    }
-}
-
-impl From<uefi::Error> for DiscoveryError {
-    fn from(err: uefi::Error) -> Self {
-        DiscoveryError::Firmware(err)
     }
 }
 
@@ -124,55 +111,20 @@ impl fmt::Display for Processor {
     }
 }
 
-/// A one-line summary, e.g. "4 processors, 4 enabled".
+/// The processors as log lines: a summary, then one per processor, marking
+/// the bootstrap processor.
 impl fmt::Display for Processors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = 1 + self.aps.len();
         let plural = if total == 1 { "" } else { "s" };
-        write!(f, "{total} processor{plural}, {} enabled", self.enabled())
-    }
-}
-
-impl fmt::Display for Listing<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "smp: {}", self.0)?;
-        self.0.iter().try_for_each(|(id, cpu)| {
+        let enabled = self.iter().filter(|(_, cpu)| cpu.is_enabled).count();
+        writeln!(f, "smp: {total} processor{plural}, {enabled} enabled")?;
+        self.iter().try_for_each(|(id, cpu)| {
             let role = if id == CpuId::BSP { " (bsp)" } else { "" };
             writeln!(f, "smp: cpu {id}{role}: {cpu}")
         })
     }
 }
-
-impl fmt::Display for DiscoveryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DiscoveryError::Firmware(err) => write!(f, "MP Services unavailable: {err:?}"),
-            DiscoveryError::BspCount(count) => {
-                write!(f, "firmware reported {count} bootstrap processors")
-            }
-        }
-    }
-}
-
-impl fmt::Display for StartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StartError::Trampoline(err) => {
-                write!(f, "no page below 1 MiB for the trampoline: {err:?}")
-            }
-            StartError::Unaddressable { id, apic_id } => {
-                write!(f, "cpu {id}: apic {apic_id} can't be addressed")
-            }
-            StartError::Timeout { id, apic_id } => {
-                write!(f, "cpu {id}: apic {apic_id} didn't start")
-            }
-        }
-    }
-}
-
-impl error::Error for DiscoveryError {}
-
-impl error::Error for StartError {}
 
 /// Enumerates the processors through UEFI's MP Services protocol.
 ///
@@ -239,14 +191,14 @@ async fn start_one(
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
-    unsafe { int::send_init(local, dest) };
+    unsafe { int::send_ipi(local, dest, Ipi::Init) };
     // Intel asks for 10 ms here, about one timer period.
     sleep(ticks, 1).await;
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for periods in [1, START_TIMEOUT] {
         // SAFETY: `launch` put the trampoline in the page at `vector`.
-        unsafe { int::send_startup(local, dest, launch.vector()) };
+        unsafe { int::send_ipi(local, dest, Ipi::Startup(launch.vector())) };
         if wait_until(ticks, periods, || launch.arrived()).await {
             break;
         }
@@ -266,7 +218,8 @@ async fn sleep(ticks: &mut Ticks<'_>, periods: u64) {
 /// `ticks`, which coalesces missed ticks: its first item can be one that
 /// happened before this was called.
 async fn wait_until(ticks: &mut Ticks<'_>, periods: u64, done: impl Fn() -> bool) -> bool {
-    let deadline = timer::after(timer::now(), periods);
+    // The period under way has partly gone already, so it doesn't count.
+    let deadline = timer::now() + periods + 1;
     done() || {
         ticks
             .any(|now| future::ready(now >= deadline || done()))
