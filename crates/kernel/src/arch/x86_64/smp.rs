@@ -147,6 +147,8 @@ impl fmt::Display for StartError {
     }
 }
 
+impl error::Error for DiscoveryError {}
+
 impl error::Error for StartError {}
 
 /// Enumerates the processors through UEFI's MP Services protocol.
