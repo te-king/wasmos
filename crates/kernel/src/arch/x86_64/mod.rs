@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::{error::Error, fmt::Display};
 
 use uart_16550::{Uart16550Tty, backend::PioBackend};
-use uefi::{Status, entry};
+use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
 use crate::{executor, kernel_main, logln};
@@ -69,7 +69,7 @@ fn main() -> Status {
         Err(err) => logln!("smp: {}", err),
     }
 
-    report(executor::block_on(async {
+    finish(executor::block_on(async {
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
@@ -90,19 +90,31 @@ fn ap_main(heap: boot::Heap, id: u32) -> ! {
     }
 }
 
-/// Reports the kernel's result, to QEMU through its debug-exit port and to
-/// the firmware as the entry point's status. This is the only place that
-/// decides whether the kernel succeeded.
-fn report(result: Result<(), impl Display>) -> Status {
+/// Ends the kernel with its result. This is the only place that decides
+/// whether the kernel succeeded.
+///
+/// Boot services are gone, so there is no firmware left to return to. Under
+/// QEMU the debug-exit port ends the emulator. Elsewhere, success powers the
+/// machine off and failure halts, leaving the log readable.
+fn finish(result: Result<(), impl Display>) -> ! {
     match result {
         Ok(()) => {
             qemu::exit_qemu(qemu::QemuExitCode::Success);
-            Status::SUCCESS
+            uefi::runtime::reset(ResetType::SHUTDOWN, Status::SUCCESS, None)
         }
         Err(err) => {
             logln!("kernel: {}", err);
             qemu::exit_qemu(qemu::QemuExitCode::Failed);
-            Status::UNSUPPORTED
+            halt()
         }
+    }
+}
+
+/// Stops this processor for good.
+fn halt() -> ! {
+    interrupts::disable();
+    // An NMI can still wake it.
+    loop {
+        hlt();
     }
 }

@@ -62,7 +62,7 @@ let clock = firmware
     .init_cpu(0)          // per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // BSP only: its LAPIC timer drives `timer`
-report(executor::block_on(async {
+finish(executor::block_on(async {
     smp::start(&clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
     kernel_main().await?;
     ..
@@ -70,7 +70,7 @@ report(executor::block_on(async {
 ```
 
 - Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
-- `report` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
+- `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
 - Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
