@@ -47,10 +47,6 @@ pub struct Processors {
     pub aps: Vec<Processor>,
 }
 
-/// The processors as log lines: a summary, then one per processor, marking
-/// the bootstrap processor.
-pub struct Listing<'a>(pub &'a Processors);
-
 /// Why processor discovery failed.
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
@@ -85,11 +81,6 @@ impl Processors {
         self.iter()
             .filter(|&(id, ap)| id != CpuId::BSP && ap.is_enabled && ap.is_healthy)
     }
-
-    /// How many processors are enabled.
-    pub fn enabled(&self) -> usize {
-        self.iter().filter(|(_, cpu)| cpu.is_enabled).count()
-    }
 }
 
 impl From<&ProcessorInformation> for Processor {
@@ -120,19 +111,15 @@ impl fmt::Display for Processor {
     }
 }
 
-/// A one-line summary, e.g. "4 processors, 4 enabled".
+/// The processors as log lines: a summary, then one per processor, marking
+/// the bootstrap processor.
 impl fmt::Display for Processors {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = 1 + self.aps.len();
         let plural = if total == 1 { "" } else { "s" };
-        write!(f, "{total} processor{plural}, {} enabled", self.enabled())
-    }
-}
-
-impl fmt::Display for Listing<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "smp: {}", self.0)?;
-        self.0.iter().try_for_each(|(id, cpu)| {
+        let enabled = self.iter().filter(|(_, cpu)| cpu.is_enabled).count();
+        writeln!(f, "smp: {total} processor{plural}, {enabled} enabled")?;
+        self.iter().try_for_each(|(id, cpu)| {
             let role = if id == CpuId::BSP { " (bsp)" } else { "" };
             writeln!(f, "smp: cpu {id}{role}: {cpu}")
         })

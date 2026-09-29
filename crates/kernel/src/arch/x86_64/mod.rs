@@ -70,7 +70,7 @@ fn bsp_main(
     let mut clock = heap.init_cpu().start_clock();
 
     match &processors {
-        Ok(processors) => log!("{}", smp::Listing(processors)),
+        Ok(processors) => log!("{processors}"),
         Err(err) => logln!("smp: {err}"),
     }
 
