@@ -30,6 +30,6 @@ fn print<T: 'static>(caller: Caller<'_, T>, ptr: u32, len: u32) -> Result<(), Er
     let text = core::str::from_utf8(bytes)
         .map_err(|_| Error::new("wasmos_print: text is not valid UTF-8"))?;
 
-    log!("{}", text);
+    log!("{text}");
     Ok(())
 }

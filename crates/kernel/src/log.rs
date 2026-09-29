@@ -41,14 +41,21 @@ pub fn log_panic(args: core::fmt::Arguments) {
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        $crate::log::_log(format_args!($($arg)*))
+        $crate::log::_log(::core::format_args!($($arg)*))
     };
 }
 
 /// Logs a message to the kernel log, followed by a newline.
+///
+/// The message is formatted by its own `format_args!` rather than joined to
+/// the newline with `concat!`, which would stop the format string capturing
+/// variables (`logln!("{x}")`).
 #[macro_export]
 macro_rules! logln {
-    () => ($crate::log!("\n"));
-    ($fmt:expr) => ($crate::log!(concat!($fmt, "\n")));
-    ($fmt:expr, $($arg:tt)*) => ($crate::log!(concat!($fmt, "\n"), $($arg)*));
+    () => {
+        $crate::log!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::log!("{}\n", ::core::format_args!($($arg)*))
+    };
 }

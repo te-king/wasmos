@@ -40,11 +40,11 @@ async fn async_number() -> u32 {
 
 async fn example_task() {
     let number = async_number().await;
-    logln!("async number: {}", number);
+    logln!("async number: {number}");
 }
 
 async fn tick_task() {
     let ticks = timer::ticks().expect("nothing else is using the timer");
     let seen: Vec<u64> = ticks.take(3).collect().await;
-    logln!("timer: ticks {:?}", seen);
+    logln!("timer: ticks {seen:?}");
 }

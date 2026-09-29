@@ -60,13 +60,13 @@ fn main() -> Status {
     cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
     match &processors {
         Ok(processors) => {
-            logln!("smp: {}", processors);
+            logln!("smp: {processors}");
             for (id, cpu) in processors.iter().enumerate() {
                 let role = if id == 0 { " (bsp)" } else { "" };
-                logln!("smp: cpu {}{}: {}", id, role, cpu);
+                logln!("smp: cpu {id}{role}: {cpu}");
             }
         }
-        Err(err) => logln!("smp: {}", err),
+        Err(err) => logln!("smp: {err}"),
     }
 
     finish(executor::block_on(async {
@@ -103,7 +103,7 @@ fn finish(result: Result<(), impl Display>) -> ! {
             uefi::runtime::reset(ResetType::SHUTDOWN, Status::SUCCESS, None)
         }
         Err(err) => {
-            logln!("kernel: {}", err);
+            logln!("kernel: {err}");
             qemu::exit_qemu(qemu::QemuExitCode::Failed);
             halt()
         }

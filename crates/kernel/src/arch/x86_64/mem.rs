@@ -18,6 +18,8 @@ static mut EARLY_HEAP: [u8; EARLY_HEAP_SIZE] = [0; EARLY_HEAP_SIZE];
 /// so it can be used from the very start of the kernel.
 #[global_allocator]
 static ALLOCATOR: TalcLock<spin::Mutex<()>, Claim> =
+    // SAFETY: Nothing else refers to `EARLY_HEAP`, so the allocator has it
+    // to itself for the life of the kernel.
     TalcLock::new(unsafe { Claim::array(&raw mut EARLY_HEAP) });
 
 /// Register the memory map with the memory allocator
