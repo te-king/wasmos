@@ -145,10 +145,16 @@ fn finish(result: Result<(), impl Display>) -> ! {
         }
         Err(err) => {
             logln!("kernel: {err}");
-            qemu::exit_qemu(qemu::QemuExitCode::Failed);
-            halt()
+            fail()
         }
     }
+}
+
+/// Ends the kernel in failure, once the failure has been logged: under QEMU
+/// the debug-exit port ends the emulator, and elsewhere this processor halts.
+fn fail() -> ! {
+    qemu::exit_qemu(qemu::QemuExitCode::Failed);
+    halt()
 }
 
 /// Stops this processor for good.
