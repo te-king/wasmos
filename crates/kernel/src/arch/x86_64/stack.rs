@@ -10,7 +10,7 @@ use core::{arch::asm, mem::ManuallyDrop};
 use x86_64::VirtAddr;
 
 /// The stack every processor runs the kernel on. Running a guest takes
-/// about 310 KiB of it, in debug and release builds alike.
+/// about 340 KiB of it, in debug and release builds alike.
 pub const KERNEL_SIZE: usize = 1024 * 1024;
 
 /// `SIZE` bytes of stack, aligned as the System V ABI expects.

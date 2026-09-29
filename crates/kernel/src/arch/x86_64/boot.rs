@@ -80,7 +80,7 @@ impl Heap {
     /// Continues on a fresh kernel stack, for good.
     ///
     /// The firmware's stack is too small for the kernel (128 KiB under
-    /// OVMF, where running a guest takes about 310 KiB) and has nothing
+    /// OVMF, where running a guest takes about 340 KiB) and has nothing
     /// guarding its bottom, below which the allocator may have claimed
     /// memory: overflowing it silently corrupts the heap. Application
     /// processors start on a kernel stack, so only the bootstrap processor

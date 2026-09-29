@@ -62,7 +62,7 @@ firmware
     .exit()               // exit boot services, mask legacy PIC, serial log, memory map -> allocator
     .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
 // in bsp_main:
-let clock = heap
+let mut clock = heap
     .init_cpu(0)          // own GDT + TSS (interrupt stacks), per-CPU block + LAPIC handle (needs the heap)
     .enable_interrupts()  // IDT, enable LAPIC with its timer stopped, sti
     .start_clock();       // BSP only: its LAPIC timer drives `timer`
@@ -77,7 +77,7 @@ finish(executor::block_on(async {
 - `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - `cpu::with` before `cpu::init` on that CPU is undefined behaviour. The typestates guarantee it (the IDT is only loaded after `init_cpu`), on application processors too.
-- The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 310 KiB of stack, so staying on it silently corrupted the heap.
+- The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 340 KiB of stack, so staying on it silently corrupted the heap.
 - Stacks (`stack.rs`) are 1 MiB (`KERNEL_SIZE`) on every processor. `stack::leak` returns a `Top`, which isn't `Copy`, so each stack has one user, and `stack::run_on` can safely switch to it. Nothing guards their bottoms yet: that needs the kernel to own the page tables, which OVMF maps read-only.
 - Application processors run the same chain from `Heap` to `Interrupts`. They are started after `exit()`, so `trampoline::enter` makes their `Heap` token (`Heap::application_processor`, unsafe) and passes it to `ap_main`. They never reach `Clock`: `start_clock` asserts it's on the BSP (logical ID 0).
 
@@ -108,7 +108,7 @@ finish(executor::block_on(async {
 
 ### Dependency notes
 - x2apic's IPI functions write `dest` into the upper half of the ICR as is, which is only right in x2APIC mode. In xAPIC mode the APIC ID belongs in the top byte, so always go through `int::ipi_destination`. Otherwise an IPI meant for APIC 1 goes to APIC 0, the BSP. QEMU without KVM gives xAPIC mode.
-- `wasmi` is built with `default-features = false`. Keep `validate` (otherwise guest modules aren't validated) and `auto-dispatch` (otherwise unoptimised builds use tail-call dispatch that grows the kernel stack on every wasm instruction). Guests are compiled eagerly (`CompilationMode::Eager`): a lazy compile burns fuel, and running out there is a plain error rather than a resumable call. Running a guest takes about 310 KiB of kernel stack.
+- `wasmi` is built with `default-features = false`. Keep `validate` (otherwise guest modules aren't validated) and `auto-dispatch` (otherwise unoptimised builds use tail-call dispatch that grows the kernel stack on every wasm instruction). Guests are compiled eagerly (`CompilationMode::Eager`): a lazy compile burns fuel, and running out there is a plain error rather than a resumable call. Running a guest takes about 340 KiB of kernel stack.
 
 ## Code style
 
