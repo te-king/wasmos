@@ -31,6 +31,13 @@ pub fn now() -> u64 {
     TICKS.load(Ordering::Acquire)
 }
 
+/// The first tick count by which at least `periods` full timer periods will
+/// have passed since the count was `now`. The period under way at `now` has
+/// partly gone already, so it doesn't count.
+pub const fn after(now: u64, periods: u64) -> u64 {
+    now + periods + 1
+}
+
 /// Returns the stream of timer ticks, or `None` while another one exists.
 ///
 /// There is a single waker slot, so only one task can wait on ticks at a
