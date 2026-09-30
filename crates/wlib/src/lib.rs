@@ -13,9 +13,23 @@ pub mod sys {
     }
 }
 
-// Import attributes need string literals, so check them against the ABI.
+// Import and export attributes need string literals, so check them against
+// the ABI.
 const _: () = assert!(abi::same(abi::MODULE, "host"));
 const _: () = assert!(abi::same(abi::PRINT, "wasmos_print"));
+const _: () = assert!(abi::same(abi::ENTRY, "main"));
+
+/// Makes `main`, a `fn()`, the guest's entry point: the function the kernel
+/// calls to run it, exported as `wasmos_abi::ENTRY` with the C ABI.
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => {
+        #[unsafe(export_name = "main")]
+        pub extern "C" fn __wasmos_entry() {
+            $main()
+        }
+    };
+}
 
 /// Writes `text` to the kernel log.
 pub fn print(text: &str) {
