@@ -14,6 +14,7 @@ wasmi = { version = "2.0.0", default-features = false, features = [
 uefi = "0.41.0"
 talc = "5.1.1"
 spin = "0.12.3"
+lock_api = "0.4.14"
 thiserror = { version = "2.0.21", default-features = false }
 futures-util = { version = "0.3.34", default-features = false }
 wasmos-abi = { path = "../abi" }

@@ -256,6 +256,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "lock_api",
  "spin 0.12.3",
  "talc",
  "thiserror",

@@ -24,12 +24,17 @@ pub use boot::Clock;
 /// The kernel log's serial port: COM1, through port I/O.
 pub type Console = Uart16550Tty<PioBackend>;
 
-/// Runs `f` with this processor's interrupts disabled, then restores them.
-pub fn without_interrupts<R>(f: impl FnOnce() -> R) -> R {
-    interrupts::without_interrupts(f)
+/// Whether this processor's interrupts are enabled.
+pub fn interrupts_enabled() -> bool {
+    interrupts::are_enabled()
 }
 
-/// Disables this processor's interrupts for good, e.g. when panicking.
+/// Enables this processor's interrupts.
+pub fn enable_interrupts() {
+    interrupts::enable();
+}
+
+/// Disables this processor's interrupts.
 pub fn disable_interrupts() {
     interrupts::disable();
 }

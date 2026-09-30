@@ -1,6 +1,8 @@
 use talc::{TalcLock, source::Claim};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned, MemoryType};
 
+use crate::sync::RawIrqMutex;
+
 /// UEFI memory map pages are always 4 KiB, whatever the architecture.
 pub const PAGE_SIZE: usize = 4096;
 
@@ -15,9 +17,10 @@ const EARLY_HEAP_SIZE: usize = 1024 * 1024;
 static mut EARLY_HEAP: [u8; EARLY_HEAP_SIZE] = [0; EARLY_HEAP_SIZE];
 
 /// The allocator claims `EARLY_HEAP` the first time it runs out of memory,
-/// so it can be used from the very start of the kernel.
+/// so it can be used from the very start of the kernel. Its lock holds off
+/// interrupts, so a handler can allocate and free too.
 #[global_allocator]
-static ALLOCATOR: TalcLock<spin::Mutex<()>, Claim> =
+static ALLOCATOR: TalcLock<RawIrqMutex, Claim> =
     // SAFETY: Nothing else refers to `EARLY_HEAP`, so the allocator has it
     // to itself for the life of the kernel.
     TalcLock::new(unsafe { Claim::array(&raw mut EARLY_HEAP) });
