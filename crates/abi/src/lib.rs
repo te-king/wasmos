@@ -12,6 +12,11 @@ pub const MODULE: &str = "host";
 /// starting at `ptr` in the guest's `memory` export, to the kernel log.
 pub const PRINT: &str = "wasmos_print";
 
+/// `wasmos_sleep(ticks: i64)`: returns once at least `ticks` full timer
+/// periods (about 10 ms each under QEMU, not calibrated) have passed. The
+/// guest is suspended meanwhile, so the rest of the kernel runs.
+pub const SLEEP: &str = "wasmos_sleep";
+
 /// The function every guest exports and the kernel calls to run it:
 /// `main()`, taking and returning nothing.
 pub const ENTRY: &str = "main";

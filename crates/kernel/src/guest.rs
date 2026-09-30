@@ -5,13 +5,23 @@
 //! yields to the executor before carrying on, so a guest stuck in a loop
 //! can't stall the rest of the kernel. Only a call to a host function, or
 //! the start function, runs without yielding.
+//!
+//! A host function that has to wait returns a [`Request`], which suspends
+//! the guest too: the kernel awaits it, then resumes the guest with the
+//! host function's results.
+
+use alloc::vec::Vec;
 
 use wasmi::{
-    CompilationMode, Config, Engine, Error, Func, Module, ResumableCall, ResumableCallOutOfFuel,
-    Store,
+    CompilationMode, Config, Engine, Error, Func, Module, ResumableCall, ResumableCallHostTrap,
+    ResumableCallOutOfFuel, Store, Val,
 };
 
-use crate::{executor, host};
+use crate::{
+    executor,
+    host::{self, Request},
+    timer::Timer,
+};
 
 /// The fuel a guest runs on between yields. Under QEMU without KVM, wasmi
 /// gets through about 300,000 a second, so this is about 35 ms; on hardware
@@ -23,26 +33,57 @@ const SLICE: u64 = 10_000;
 const START_FUEL: u64 = 100 * SLICE;
 
 /// Runs a guest module's entry point to completion, yielding between
-/// slices.
-pub async fn run(wasm: &[u8]) -> Result<(), Error> {
+/// slices, and sleeping on `timer` when it asks to.
+pub async fn run(wasm: &[u8], timer: &Timer) -> Result<(), Error> {
     let (mut store, entry) = instantiate(wasm)?;
     let mut suspended = suspension(entry.call_resumable(&mut store, &[], &mut [])?)?;
     while let Some(call) = suspended {
-        executor::yield_now().await;
-        store.set_fuel(refill(call.required_fuel()))?;
-        suspended = suspension(call.resume(&mut store, &mut [])?)?;
+        let resumed = match call {
+            Suspended::OutOfFuel(call) => {
+                executor::yield_now().await;
+                store.set_fuel(refill(call.required_fuel()))?;
+                call.resume(&mut store, &mut [])?
+            }
+            Suspended::Request(call, request) => {
+                let results = fulfil(request, timer).await;
+                call.resume(&mut store, &results, &mut [])?
+            }
+        };
+        suspended = suspension(resumed)?;
     }
     Ok(())
 }
 
-/// What's left of `call` to resume: the rest of it once it has run out of
-/// fuel, or nothing once it has finished. Host functions only fail on bad
-/// guest input, which traps the guest.
-fn suspension(call: ResumableCall) -> Result<Option<ResumableCallOutOfFuel>, Error> {
+/// A guest's call that has stopped short of finishing, to be resumed.
+enum Suspended {
+    /// It ran out of fuel.
+    OutOfFuel(ResumableCallOutOfFuel),
+    /// A host function returned a request, whose results it resumes with.
+    Request(ResumableCallHostTrap, Request),
+}
+
+/// What's left of `call` to resume, or nothing once it has finished. A
+/// host function's error is either a request, which suspends the guest, or
+/// bad guest input, which traps it.
+fn suspension(call: ResumableCall) -> Result<Option<Suspended>, Error> {
     match call {
         ResumableCall::Finished => Ok(None),
-        ResumableCall::HostTrap(trap) => Err(trap.into_host_error()),
-        ResumableCall::OutOfFuel(suspended) => Ok(Some(suspended)),
+        ResumableCall::OutOfFuel(call) => Ok(Some(Suspended::OutOfFuel(call))),
+        ResumableCall::HostTrap(call) => match call.host_error().downcast_ref::<Request>() {
+            Some(&request) => Ok(Some(Suspended::Request(call, request))),
+            None => Err(call.into_host_error()),
+        },
+    }
+}
+
+/// Does what `request` asks, and gives the results its host function
+/// returns.
+async fn fulfil(request: Request, timer: &Timer) -> Vec<Val> {
+    match request {
+        Request::Sleep(ticks) => {
+            timer.sleep(ticks).await;
+            Vec::new()
+        }
     }
 }
 

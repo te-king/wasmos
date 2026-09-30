@@ -10,6 +10,9 @@ pub mod sys {
         /// log. The kernel traps the guest if the range is out of bounds or
         /// isn't valid UTF-8.
         pub fn wasmos_print(ptr: *const u8, len: usize);
+
+        /// Returns once at least `ticks` full timer periods have passed.
+        pub fn wasmos_sleep(ticks: u64);
     }
 }
 
@@ -17,6 +20,7 @@ pub mod sys {
 // the ABI.
 const _: () = assert!(abi::same(abi::MODULE, "host"));
 const _: () = assert!(abi::same(abi::PRINT, "wasmos_print"));
+const _: () = assert!(abi::same(abi::SLEEP, "wasmos_sleep"));
 const _: () = assert!(abi::same(abi::ENTRY, "main"));
 
 /// Makes `main`, a `fn()`, the guest's entry point: the function the kernel
@@ -36,6 +40,13 @@ pub fn print(text: &str) {
     // SAFETY: `text` is valid UTF-8 and its `len` bytes at `ptr` stay valid
     // for the call, which is all the host reads.
     unsafe { sys::wasmos_print(text.as_ptr(), text.len()) }
+}
+
+/// Returns once at least `ticks` full timer periods (about 10 ms each under
+/// QEMU, not calibrated) have passed.
+pub fn sleep(ticks: u64) {
+    // SAFETY: The host function takes any number of ticks.
+    unsafe { sys::wasmos_sleep(ticks) }
 }
 
 /// Formats its arguments and writes them to the kernel log.
