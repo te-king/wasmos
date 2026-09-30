@@ -55,9 +55,7 @@ fn main() -> Status {
     // services yet.
     let firmware = unsafe { boot::BootServices::start() };
     let startup = smp::prepare(&firmware);
-    firmware
-        .exit()
-        .on_kernel_stack(move |heap| bsp_main(heap, startup))
+    firmware.exit(move |heap| bsp_main(heap, startup))
 }
 
 /// Where the bootstrap processor goes once it has left the firmware.

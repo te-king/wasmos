@@ -4,7 +4,7 @@
 //! steps can only run in order:
 //!
 //! ```text
-//! BootServices --exit()--> Heap<Bsp> --on_kernel_stack()--> Heap<Bsp>
+//! BootServices --exit(f)--> Heap<Bsp>, passed to f on a kernel stack
 //! Heap<R> --init_cpu()--> Interrupts<R>
 //! Interrupts<Bsp> --start_clock()--> Clock
 //! ```
@@ -77,8 +77,15 @@ impl BootServices {
 
     /// Exits boot services with interrupts disabled, masks the legacy PIC,
     /// then brings up the serial log and gives all conventional memory to
-    /// the allocator.
-    pub fn exit(self) -> Heap<Bsp> {
+    /// the allocator. Carries on in `f`, on a fresh kernel stack, for good.
+    ///
+    /// The firmware's stack is too small for the kernel (128 KiB under
+    /// OVMF, where running a guest takes about 340 KiB) and has nothing
+    /// guarding its bottom, below which the allocator may have claimed
+    /// memory: overflowing it silently corrupts the heap. So the only way
+    /// to the next stage is off it. Application processors start on a
+    /// kernel stack, so they have no need for this.
+    pub fn exit(self, f: impl FnOnce(Heap<Bsp>) -> !) -> ! {
         // SAFETY: Consuming the token means nothing can use boot services
         // afterwards, and nothing borrowing it can still be alive. Code that
         // borrows it (like `smp::discover`) closes any protocol it opens.
@@ -99,20 +106,9 @@ impl BootServices {
         // SAFETY: The memory map was just returned by exiting boot services,
         // so its conventional regions are free for the allocator.
         unsafe { mem::install_memory_map(memory_map) };
-        Heap(Bsp(()))
-    }
-}
 
-impl Heap<Bsp> {
-    /// Continues on a fresh kernel stack, for good.
-    ///
-    /// The firmware's stack is too small for the kernel (128 KiB under
-    /// OVMF, where running a guest takes about 340 KiB) and has nothing
-    /// guarding its bottom, below which the allocator may have claimed
-    /// memory: overflowing it silently corrupts the heap. Application
-    /// processors start on a kernel stack, so they have no need for this.
-    pub fn on_kernel_stack(self, f: impl FnOnce(Heap<Bsp>) -> !) -> ! {
-        stack::run_on(stack::leak::<{ stack::KERNEL_SIZE }>(), move || f(self))
+        let heap = Heap(Bsp(()));
+        stack::run_on(stack::leak::<{ stack::KERNEL_SIZE }>(), move || f(heap))
     }
 }
 

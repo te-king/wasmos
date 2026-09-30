@@ -88,16 +88,7 @@ impl Local {
     /// `.await`, after which a task could be resumed on a different
     /// processor.
     pub fn with<R>(self, f: impl FnOnce(&Cpu) -> R) -> R {
-        interrupts::without_interrupts(|| {
-            let cpu: *const Cpu;
-            // SAFETY: `init` pointed this processor's GS base at its `Cpu`
-            // block (which `self` proves), which starts with a pointer to
-            // itself and is never freed.
-            unsafe {
-                asm!("mov {}, gs:[0]", out(reg) cpu, options(nostack, readonly, preserves_flags));
-                f(&*cpu)
-            }
-        })
+        interrupts::without_interrupts(|| f(self.cpu()))
     }
 
     /// Runs `f` with the current processor's local APIC.
@@ -105,7 +96,23 @@ impl Local {
         self.with(|cpu| f(&mut cpu.lapic.borrow_mut()))
     }
 
+    /// This processor's id. It never changes, so unlike [`Local::with`],
+    /// reading it doesn't need interrupts disabled.
     pub fn id(self) -> CpuId {
-        self.with(|cpu| cpu.id)
+        self.cpu().id
+    }
+
+    /// The current processor's block. Only for this module: its `RefCell`s
+    /// may only be borrowed with interrupts disabled, and a reference kept
+    /// across an `.await` could end up on another processor.
+    fn cpu(self) -> &'static Cpu {
+        let cpu: *const Cpu;
+        // SAFETY: `init` pointed this processor's GS base at its `Cpu` block
+        // (which `self` proves), which starts with a pointer to itself and
+        // is never freed.
+        unsafe {
+            asm!("mov {}, gs:[0]", out(reg) cpu, options(nostack, readonly, preserves_flags));
+            &*cpu
+        }
     }
 }
