@@ -7,9 +7,8 @@
 //! once boot services are exited, with INIT and startup IPIs.
 
 use alloc::vec::Vec;
-use core::{fmt, future, iter};
+use core::{fmt, iter};
 
-use futures_util::StreamExt;
 use thiserror::Error;
 use uefi::{
     boot,
@@ -17,12 +16,12 @@ use uefi::{
 };
 
 use super::{
-    boot::{Ap, BootServices, Clock, Heap},
+    boot::{Ap, BootServices, Heap},
     cpu::{CpuId, Local},
     int::{self, Ipi, IpiDestination},
     trampoline::{Armed, Trampoline},
 };
-use crate::timer::{self, Ticks};
+use crate::timer::Timer;
 
 /// How long to wait for a processor to enter the kernel, in timer periods.
 /// It takes well under one; this is about a second.
@@ -193,16 +192,19 @@ impl Startup {
     /// Starts the application processors, one at a time, each running
     /// `main` with its first boot stage, which carries its id.
     ///
-    /// Needs the clock, since the delays between IPIs are timed in ticks.
-    pub async fn start(self, clock: &mut Clock, main: fn(Heap<Ap>) -> !) -> Result<(), Timeout> {
+    /// Needs the timer, since the delays between IPIs are timed in ticks.
+    pub async fn start(
+        self,
+        local: Local,
+        timer: &Timer,
+        main: fn(Heap<Ap>) -> !,
+    ) -> Result<(), Timeout> {
         let Some((trampoline, targets)) = self.launch else {
             return Ok(());
         };
-        let local = clock.local();
-        let mut ticks = timer::ticks(clock);
         let mut trampoline = trampoline.arm(main);
         for target in targets {
-            trampoline = start_one(local, &mut ticks, trampoline, target).await?;
+            trampoline = start_one(local, timer, trampoline, target).await?;
         }
         Ok(())
     }
@@ -212,7 +214,7 @@ impl Startup {
 /// gives the trampoline back once the processor has let go of it.
 async fn start_one(
     local: Local,
-    ticks: &mut Ticks<'_>,
+    timer: &Timer,
     trampoline: Armed,
     Target { id, apic_id, dest }: Target,
 ) -> Result<Armed, Timeout> {
@@ -222,37 +224,15 @@ async fn start_one(
     // started, so it is parked by the firmware, running nothing of ours.
     unsafe { int::send_ipi(local, dest, Ipi::Init) };
     // Intel asks for 10 ms here, about one timer period.
-    sleep(ticks, 1).await;
+    timer.sleep(1).await;
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for periods in [1, START_TIMEOUT] {
         // SAFETY: `launch` put the trampoline in the page at `vector`.
         unsafe { int::send_ipi(local, dest, Ipi::Startup(launch.vector())) };
-        if wait_until(ticks, periods, || launch.arrived()).await {
+        if timer.within(periods, || launch.arrived()).await {
             break;
         }
     }
     launch.land().ok_or(Timeout { id, apic_id })
-}
-
-/// Waits for at least `periods` full timer periods.
-async fn sleep(ticks: &mut Ticks<'_>, periods: u64) {
-    wait_until(ticks, periods, || false).await;
-}
-
-/// Waits for `done` to return true, checking it on each tick. Returns false
-/// if it still hasn't after at least `periods` full timer periods.
-///
-/// The wait is bounded by a tick count rather than a number of items from
-/// `ticks`, which coalesces missed ticks: its first item can be one that
-/// happened before this was called.
-async fn wait_until(ticks: &mut Ticks<'_>, periods: u64, done: impl Fn() -> bool) -> bool {
-    // The period under way has partly gone already, so it doesn't count.
-    let deadline = timer::now() + periods + 1;
-    done() || {
-        ticks
-            .any(|now| future::ready(now >= deadline || done()))
-            .await;
-        done()
-    }
 }

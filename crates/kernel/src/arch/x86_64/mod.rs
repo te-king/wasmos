@@ -5,7 +5,7 @@ use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
-use crate::{executor::Executor, kernel_main, log, logln};
+use crate::{executor::Executor, kernel_main, log, logln, timer};
 
 mod boot;
 mod cpu;
@@ -66,16 +66,19 @@ fn main() -> Status {
 /// Where the bootstrap processor goes once it has left the firmware.
 fn bsp_main(heap: boot::Heap<boot::Bsp>, startup: Result<smp::Startup, smp::PrepareError>) -> ! {
     let mut clock = heap.init_cpu().start_clock();
+    let local = clock.local();
 
     if let Ok(startup) = &startup {
         log!("{}", startup.processors);
     }
 
-    finish(Executor::new().block_on(async {
-        startup?.start(&mut clock, ap_main).await?;
-        kernel_main(&mut clock).await?;
-        Ok::<_, KernelError>(())
-    }))
+    finish(
+        Executor::new().block_on(timer::serve(&mut clock, async |timer| {
+            startup?.start(local, timer, ap_main).await?;
+            kernel_main(timer).await?;
+            Ok::<_, KernelError>(())
+        })),
+    )
 }
 
 /// Why the kernel failed.
