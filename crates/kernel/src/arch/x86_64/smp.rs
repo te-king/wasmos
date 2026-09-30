@@ -20,7 +20,7 @@ use super::{
     boot::{Ap, BootServices, Clock, Heap},
     cpu::{CpuId, Local},
     int::{self, Ipi, IpiDestination},
-    trampoline::Trampoline,
+    trampoline::{Armed, Trampoline},
 };
 use crate::timer::{self, Ticks};
 
@@ -203,9 +203,9 @@ impl Startup {
         stream::iter(targets)
             .map(Ok)
             .try_fold(
-                (trampoline, timer::ticks(clock)),
+                (trampoline.arm(main), timer::ticks(clock)),
                 |(trampoline, mut ticks), target| async move {
-                    let trampoline = start_one(local, &mut ticks, trampoline, target, main).await?;
+                    let trampoline = start_one(local, &mut ticks, trampoline, target).await?;
                     Ok((trampoline, ticks))
                 },
             )
@@ -219,11 +219,10 @@ impl Startup {
 async fn start_one(
     local: Local,
     ticks: &mut Ticks<'_>,
-    trampoline: Trampoline,
+    trampoline: Armed,
     Target { id, apic_id, dest }: Target,
-    main: fn(Heap<Ap>) -> !,
-) -> Result<Trampoline, Timeout> {
-    let launch = trampoline.launch(id, main);
+) -> Result<Armed, Timeout> {
+    let launch = trampoline.launch(id);
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
