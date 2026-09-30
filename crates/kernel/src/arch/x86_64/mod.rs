@@ -77,19 +77,18 @@ fn ap_main(ap: boot::Ap) -> ! {
     }
 }
 
-/// Reports the kernel's result, to QEMU through its debug-exit port and to
-/// the firmware as the entry point's status. This is the only place that
-/// decides whether the kernel succeeded.
-fn report(result: Result<(), impl Display>) -> Status {
-    match result {
-        Ok(()) => {
-            qemu::exit_qemu(qemu::QemuExitCode::Success);
-            Status::SUCCESS
-        }
+/// Reports the kernel's result to QEMU through its debug-exit port, then
+/// halts. This is the only place that decides whether the kernel succeeded.
+///
+/// It never returns to the firmware: the code that called the entry point
+/// would go on to use boot services, which have been exited.
+fn report(result: Result<(), impl Display>) -> ! {
+    let code = match result {
+        Ok(()) => qemu::QemuExitCode::Success,
         Err(err) => {
             logln!("kernel: {}", err);
-            qemu::exit_qemu(qemu::QemuExitCode::Failed);
-            Status::UNSUPPORTED
+            qemu::QemuExitCode::Failed
         }
-    }
+    };
+    qemu::exit(code)
 }

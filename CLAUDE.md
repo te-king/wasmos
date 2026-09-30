@@ -67,7 +67,7 @@ report(executor::block_on(async {
 ```
 
 - Anything that needs a stage should take its token (as `smp::prepare` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
-- `report` turns the `Result` of preparing and starting the processors and running `kernel_main` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
+- `report` turns the `Result` of preparing and starting the processors and running `kernel_main` into the QEMU exit code, then halts. It's the only place the kernel decides success or failure. The kernel never returns from the UEFI entry point: the firmware code it would return to uses boot services, which have been exited. `qemu::exit` (also used by the panic handler) writes the debug-exit port, then halts in case nothing is listening.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - Each processor goes from an offline token to online. `Bsp` comes from `exit()` and its ID is 0 by construction. `Ap { id }` comes from `trampoline::enter` (`Ap::arrived`, unsafe) and is passed to `ap_main`. Both `online()`s share one private `online(id)` and return the processor's `cpu::Local`.
 - Only `Bsp::online` starts the LAPIC timer and returns the `timer::Ticks` stream, so exactly one processor drives the clock, by type rather than by a runtime check.
