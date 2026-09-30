@@ -59,7 +59,7 @@ impl BootServices {
 
         // SAFETY: COM1 is the standard serial port, and nothing else drives it.
         let serial = unsafe { Uart16550Tty::new_port(0x03f8, Config::default()) }.unwrap();
-        log::install_stdio_port(serial).unwrap();
+        log::install_stdio_port(serial);
 
         // SAFETY: The memory map was just returned by exiting boot services,
         // so its conventional regions are free for the allocator.

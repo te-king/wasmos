@@ -1,22 +1,17 @@
-use core::{cell::OnceCell, fmt::Write};
+use core::fmt::{self, Write};
 
 use crate::arch::{self, Console};
 
-static STDIO_PORT: spin::Mutex<OnceCell<Console>> = spin::Mutex::new(OnceCell::new());
+static STDIO_PORT: spin::Mutex<Option<Console>> = spin::Mutex::new(None);
 
 /// Installs a serial port as the global stdio writer.
-pub fn install_stdio_port(port: Console) -> Result<(), Console> {
-    STDIO_PORT.lock().set(port)
+pub fn install_stdio_port(port: Console) {
+    *STDIO_PORT.lock() = Some(port);
 }
 
 #[doc(hidden)]
-pub fn _log(args: core::fmt::Arguments) {
-    arch::without_interrupts(|| {
-        if let Some(writer) = STDIO_PORT.lock().get_mut() {
-            // Logging is best-effort: a failing `Display` impl shouldn't panic.
-            let _ = writer.write_fmt(args);
-        }
-    })
+pub fn _log(args: fmt::Arguments) {
+    arch::without_interrupts(|| write(&mut STDIO_PORT.lock(), args))
 }
 
 /// Logs from the panic handler, even if the log lock is already held.
@@ -24,7 +19,7 @@ pub fn _log(args: core::fmt::Arguments) {
 /// The holder may be this processor, interrupted mid-log by the panic, so
 /// waiting for the lock could hang forever. The kernel is going down, so the
 /// message matters more than the lock: if it's held, it's forced open.
-pub fn log_panic(args: core::fmt::Arguments) {
+pub fn log_panic(args: fmt::Arguments) {
     arch::disable_interrupts();
     if STDIO_PORT.is_locked() {
         // SAFETY: Nothing runs after the panic handler, so whoever holds the
@@ -32,8 +27,14 @@ pub fn log_panic(args: core::fmt::Arguments) {
         // mid-write could interleave output, which is acceptable here.
         unsafe { STDIO_PORT.force_unlock() };
     }
-    if let Some(writer) = STDIO_PORT.lock().get_mut() {
-        let _ = writer.write_fmt(args);
+    write(&mut STDIO_PORT.lock(), args)
+}
+
+/// Writes to the port, if one is installed. Logging is best-effort: a
+/// failing `Display` impl shouldn't panic.
+fn write(port: &mut Option<Console>, args: fmt::Arguments) {
+    if let Some(port) = port {
+        let _ = port.write_fmt(args);
     }
 }
 
