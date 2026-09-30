@@ -5,7 +5,7 @@ use uart_16550::{Uart16550Tty, backend::PioBackend};
 use uefi::{Status, entry, runtime::ResetType};
 use x86_64::instructions::{hlt, interrupts};
 
-use crate::{executor::Executor, kernel_main, log, logln, timer};
+use crate::{executor::Executor, kernel_main, log, logln, timer, work};
 
 mod boot;
 mod cpu;
@@ -20,6 +20,8 @@ mod stack;
 mod trampoline;
 
 pub use boot::Clock;
+pub use cpu::CpuId;
+pub use int::{WakeTarget, wake};
 
 /// The kernel log's serial port: COM1, through port I/O.
 pub type Console = Uart16550Tty<PioBackend>;
@@ -73,11 +75,14 @@ fn bsp_main(heap: boot::Heap<boot::Bsp>, startup: Result<smp::Startup, smp::Prep
     }
 
     finish(
-        Executor::new().block_on(timer::serve(&mut clock, async |timer| {
-            startup?.start(local, timer, ap_main).await?;
-            kernel_main(timer).await?;
-            Ok::<_, KernelError>(())
-        })),
+        Executor::new(WakeTarget::current(local)).block_on(timer::serve(
+            &mut clock,
+            async |timer| {
+                startup?.start(local, timer, ap_main).await?;
+                kernel_main(timer).await?;
+                Ok::<_, KernelError>(())
+            },
+        )),
     )
 }
 
@@ -89,18 +94,15 @@ enum KernelError {
     Prepare(#[from] smp::PrepareError),
     #[error(transparent)]
     Start(#[from] smp::Timeout),
-    /// A guest failed, trapping or failing to load.
-    #[error("guest: {0}")]
-    Guest(#[from] wasmi::Error),
+    #[error(transparent)]
+    Kernel(#[from] crate::Error),
 }
 
 /// Where each application processor goes once it has entered the kernel.
 fn ap_main(heap: boot::Heap<boot::Ap>) -> ! {
-    heap.init_cpu();
-    // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
-    loop {
-        hlt();
-    }
+    let local = heap.init_cpu().local();
+    // Its timer is stopped, so it sleeps until a job comes, with a wake-up.
+    match Executor::new(WakeTarget::current(local)).block_on(work::serve(local.id())) {}
 }
 
 /// Ends the kernel with its result. This is the only place that decides

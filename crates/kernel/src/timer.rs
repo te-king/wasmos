@@ -5,7 +5,7 @@
 //! of the kernel, owns the ticks and wakes each [`Sleep`] once its deadline
 //! has passed. Everything else happens in async code.
 
-use alloc::collections::BTreeMap;
+use alloc::{boxed::Box, collections::BTreeMap};
 use core::{
     convert::Infallible,
     future::{self, Future},
@@ -41,16 +41,18 @@ pub fn now() -> u64 {
 /// Runs `work` with a [`Timer`] to sleep on, serving the timer's sleepers
 /// from the clock's ticks meanwhile, and returns what `work` returns.
 ///
-/// The timer only exists while it's served, so a sleep on it always ends.
-/// The clock, which proves ticks will come, stays borrowed mutably while
-/// this runs, so it's the only consumer of ticks, which it has to be: there
-/// is a single waker slot for them.
-pub async fn serve<T>(_: &mut Clock, work: impl AsyncFnOnce(&Timer) -> T) -> T {
-    let timer = Timer {
+/// The timer is leaked, so that work handed to other processors can sleep
+/// on it too. It's only served while this runs, so a sleep started after
+/// `work` has finished never ends, but by then the kernel is ending. The
+/// clock, which proves ticks will come, stays borrowed mutably while this
+/// runs, so it's the only consumer of ticks, which it has to be: there is a
+/// single waker slot for them.
+pub async fn serve<T>(_: &mut Clock, work: impl AsyncFnOnce(&'static Timer) -> T) -> T {
+    let timer: &'static Timer = Box::leak(Box::new(Timer {
         sleepers: IrqMutex::new(Sleepers::default()),
-    };
+    }));
     let ticks = Ticks { seen: now() };
-    let work = pin!(work(&timer));
+    let work = pin!(work(timer));
     let service = pin!(timer.wake_sleepers(ticks));
     match select(work, service).await {
         Either::Left((output, _)) => output,

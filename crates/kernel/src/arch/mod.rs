@@ -8,6 +8,10 @@
 //! - `Console`: the serial port type the kernel log writes to.
 //! - `Clock`: proof that the kernel's clock is running, so `timer::tick`
 //!   is being called. Only the boot sequence can make one.
+//! - `CpuId`: a processor's logical index, the bootstrap processor being
+//!   `CpuId::BSP`, and `CpuId::index`, its position.
+//! - `WakeTarget`, `wake`: the processor an executor runs on, and making it
+//!   notice a wake-up even if it's halted.
 //! - `interrupts_enabled`, `enable_interrupts`, `disable_interrupts`: this
 //!   processor's interrupt masking, which `sync::IrqMutex` saves and
 //!   restores.
@@ -21,5 +25,6 @@ mod imp;
 compile_error!("wasmos only supports x86_64 so far (aarch64 is planned)");
 
 pub use imp::{
-    Clock, Console, disable_interrupts, enable_interrupts, interrupts_enabled, wait_for_interrupt,
+    Clock, Console, CpuId, WakeTarget, disable_interrupts, enable_interrupts, interrupts_enabled,
+    wait_for_interrupt, wake,
 };

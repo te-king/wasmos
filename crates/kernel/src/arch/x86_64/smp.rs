@@ -21,7 +21,7 @@ use super::{
     int::{self, Ipi, IpiDestination},
     trampoline::{Armed, Trampoline},
 };
-use crate::timer::Timer;
+use crate::{timer::Timer, work};
 
 /// How long to wait for a processor to enter the kernel, in timer periods.
 /// It takes well under one; this is about a second.
@@ -190,7 +190,9 @@ fn discover(_: &BootServices) -> Result<Processors, PrepareError> {
 
 impl Startup {
     /// Starts the application processors, one at a time, each running
-    /// `main` with its first boot stage, which carries its id.
+    /// `main` with its first boot stage, which carries its id. Makes every
+    /// processor a mailbox for work, and opens each one's once it has
+    /// started.
     ///
     /// Needs the timer, since the delays between IPIs are timed in ticks.
     pub async fn start(
@@ -199,12 +201,14 @@ impl Startup {
         timer: &Timer,
         main: fn(Heap<Ap>) -> !,
     ) -> Result<(), Timeout> {
+        work::init(self.processors.iter().count());
         let Some((trampoline, targets)) = self.launch else {
             return Ok(());
         };
         let mut trampoline = trampoline.arm(main);
         for target in targets {
             trampoline = start_one(local, timer, trampoline, target).await?;
+            work::open(target.id);
         }
         Ok(())
     }
