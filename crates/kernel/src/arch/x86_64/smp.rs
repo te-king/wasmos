@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use core::{fmt, future, iter};
 
-use futures_util::{StreamExt, TryStreamExt, stream};
+use futures_util::StreamExt;
 use thiserror::Error;
 use uefi::{
     boot,
@@ -199,18 +199,12 @@ impl Startup {
             return Ok(());
         };
         let local = clock.local();
-        // Each start hands the trampoline and the tick stream on to the next.
-        stream::iter(targets)
-            .map(Ok)
-            .try_fold(
-                (trampoline.arm(main), timer::ticks(clock)),
-                |(trampoline, mut ticks), target| async move {
-                    let trampoline = start_one(local, &mut ticks, trampoline, target).await?;
-                    Ok((trampoline, ticks))
-                },
-            )
-            .await
-            .map(drop)
+        let mut ticks = timer::ticks(clock);
+        let mut trampoline = trampoline.arm(main);
+        for target in targets {
+            trampoline = start_one(local, &mut ticks, trampoline, target).await?;
+        }
+        Ok(())
     }
 }
 
