@@ -14,6 +14,7 @@ mod executor;
 mod guest;
 mod host;
 mod log;
+mod sync;
 mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
