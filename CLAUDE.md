@@ -55,20 +55,19 @@ The order is load-bearing, so it is enforced with typestates. Each stage is a ze
 
 ```rust
 let firmware = unsafe { boot::BootServices::start() };
-let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
-let trampoline = Trampoline::reserve(&firmware); // a page below 1 MiB, also needs boot services
+let startup = smp::prepare(&firmware);  // needs boot services: MP Services, and a page below 1 MiB
 let (bsp, mut ticks) = firmware
     .exit()      // exit boot services, mask legacy PIC, serial log, memory map -> allocator: `Bsp`
     .online();   // per-CPU block, IDT, LAPIC with its timer stopped, sti; then the BSP's timer
 report(executor::block_on(async {
-    smp::start(&mut ticks, processors, trampoline, ap_main).await?; // times IPIs in ticks
+    startup?.start(&mut ticks, ap_main).await?; // times IPIs in ticks
     kernel_main(ticks).await?;
     ..
 }))
 ```
 
-- Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
-- `report` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
+- Anything that needs a stage should take its token (as `smp::prepare` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
+- `report` turns the `Result` of preparing and starting the processors and running `kernel_main` into the QEMU exit code and the entry point's status. It's the only place the kernel decides success or failure.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - Each processor goes from an offline token to online. `Bsp` comes from `exit()` and its ID is 0 by construction. `Ap { id }` comes from `trampoline::enter` (`Ap::arrived`, unsafe) and is passed to `ap_main`. Both `online()`s share one private `online(id)` and return the processor's `cpu::Local`.
 - Only `Bsp::online` starts the LAPIC timer and returns the `timer::Ticks` stream, so exactly one processor drives the clock, by type rather than by a runtime check.
@@ -77,9 +76,10 @@ report(executor::block_on(async {
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
+- `smp::prepare` gathers everything before `exit()`: the processors (each with its logical `id`, BSP first), their IPI destinations, and the trampoline page, which is only reserved if there are application processors to start. Any failure there fails the boot, as does a processor that doesn't start.
 - A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh 256 KiB stack. That loads the BSP's GDT and selectors, which the IDT's entries depend on, and calls `ap_main(Ap)`.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
-- `smp::start` is async. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. A processor that doesn't arrive within about a second fails the boot, and after that the trampoline must not be prepared again, since the processor might still turn up.
+- `Startup::start` is async and consumes the `Startup`. Processors start one at a time, reusing the handoff, and each signals `arrived` once it no longer needs it. It gives up at the first processor that doesn't arrive within about a second, so the trampoline is never prepared again for a processor that might still turn up.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).

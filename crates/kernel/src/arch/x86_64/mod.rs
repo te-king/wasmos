@@ -49,28 +49,19 @@ fn main() -> Status {
     // SAFETY: This is the UEFI entry point, and nothing has used boot
     // services yet.
     let firmware = unsafe { boot::BootServices::start() };
-    let processors = smp::discover(&firmware);
-    let trampoline = trampoline::Trampoline::reserve(&firmware);
+    let startup = smp::prepare(&firmware);
     let (bsp, mut ticks) = firmware.exit().online();
 
     logln!("cpu {}: online", bsp.id);
-    match &processors {
-        Ok(processors) => {
-            logln!("smp: {}", processors);
-            for (id, cpu) in processors.iter().enumerate() {
-                let role = if id == 0 { " (bsp)" } else { "" };
-                logln!("smp: cpu {}{}: {}", id, role, cpu);
-            }
+    if let Ok(startup) = &startup {
+        logln!("smp: {}", startup);
+        for processor in &startup.processors {
+            logln!("smp: {}", processor);
         }
-        Err(err) => logln!("smp: {}", err),
     }
 
     report(executor::block_on(async {
-        // Without discovery, the kernel carries on with this processor.
-        if let Ok(processors) = &processors {
-            let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
-            smp::start(&mut ticks, processors, trampoline, ap_main).await?;
-        }
+        startup?.start(&mut ticks, ap_main).await?;
         kernel_main(ticks).await?;
         Ok::<_, Box<dyn Error>>(())
     }))
