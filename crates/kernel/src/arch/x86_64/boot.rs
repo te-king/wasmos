@@ -150,6 +150,13 @@ impl<R: Role> Heap<R> {
     }
 }
 
+impl<R> Interrupts<R> {
+    /// This processor's proof of its per-CPU block.
+    pub fn local(&self) -> Local {
+        self.1
+    }
+}
+
 impl Interrupts<Bsp> {
     /// Starts this processor's local APIC timer as the kernel's clock. Every
     /// timer interrupt counts as a tick, so only the bootstrap processor

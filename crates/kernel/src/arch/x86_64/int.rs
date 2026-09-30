@@ -10,7 +10,10 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
 };
 
-use super::{cpu::Local, exception};
+use super::{
+    cpu::{CpuId, Local},
+    exception,
+};
 use crate::logln;
 
 /// The local APIC's interrupts, by vector.
@@ -20,6 +23,8 @@ enum InterruptIndex {
     Timer = 32,
     Error = 33,
     Spurious = 34,
+    /// Sent by another processor to end this one's halt (see [`wake`]).
+    Wake = 35,
 }
 
 impl InterruptIndex {
@@ -104,7 +109,48 @@ fn has_x2apic() -> bool {
     __cpuid(1).ecx & (1 << 21) != 0
 }
 
-/// The inter-processor interrupts that start a processor.
+/// A processor, as a waker running on any processor addresses it.
+#[derive(Clone, Copy, Debug)]
+pub struct WakeTarget {
+    id: CpuId,
+    dest: IpiDestination,
+}
+
+impl WakeTarget {
+    /// The processor this runs on.
+    ///
+    /// # Panics
+    /// If its local APIC ID is the broadcast ID. An application processor's
+    /// can't be, since only addressable ones are started.
+    pub fn current(local: Local) -> Self {
+        // SAFETY: Reading this processor's own ID register has no effects.
+        let raw = local.with_lapic(|lapic| unsafe { lapic.id() });
+        // x2apic returns the ID register as is: the whole ID in x2APIC mode,
+        // but in xAPIC mode the ID is its top byte.
+        let apic_id = if has_x2apic() { raw } else { raw >> 24 };
+        let dest = ipi_destination(apic_id.into())
+            .expect("this processor's local APIC ID is the broadcast ID");
+        WakeTarget {
+            id: local.id(),
+            dest,
+        }
+    }
+}
+
+/// Makes sure `target` notices a wake-up. Another processor might be halted,
+/// so it gets a wake-up IPI, whose arrival ends the halt; this one is
+/// running already.
+pub fn wake(target: WakeTarget) {
+    // SAFETY: Wakers only run on processors that are online: before then, a
+    // processor runs nothing that could hold one.
+    let local = unsafe { Local::assume() };
+    if local.id() != target.id {
+        // SAFETY: The wake-up handler only acknowledges the interrupt.
+        unsafe { send_ipi(local, target.dest, Ipi::Wake) };
+    }
+}
+
+/// The inter-processor interrupts the kernel sends.
 #[derive(Clone, Copy)]
 pub enum Ipi {
     /// Resets the processor and leaves it waiting for a startup IPI.
@@ -112,6 +158,8 @@ pub enum Ipi {
     /// Starts a waiting processor in real mode at the start of page
     /// `vector`.
     Startup(u8),
+    /// Interrupts the processor, ending a halt.
+    Wake,
 }
 
 /// Sends `ipi` to `dest`. Everything written before this call is visible to
@@ -120,6 +168,7 @@ pub enum Ipi {
 /// # Safety
 /// For `Init`, `dest` must not be running anything: INIT stops it wherever
 /// it is. For `Startup`, the page must hold code for a starting processor.
+/// `Wake` is harmless.
 pub unsafe fn send_ipi(local: Local, dest: IpiDestination, ipi: Ipi) {
     // In x2APIC mode the IPI is sent by a WRMSR, which doesn't wait for
     // earlier stores (such as the startup code's data) to become visible.
@@ -129,6 +178,7 @@ pub unsafe fn send_ipi(local: Local, dest: IpiDestination, ipi: Ipi) {
         match ipi {
             Ipi::Init => lapic.send_init_ipi(dest.0),
             Ipi::Startup(vector) => lapic.send_sipi(vector, dest.0),
+            Ipi::Wake => lapic.send_ipi(InterruptIndex::Wake.vector(), dest.0),
         }
     });
 }
@@ -159,6 +209,7 @@ pub static INTERRUPT_TABLE: LazyLock<InterruptDescriptorTable> = LazyLock::new(|
         &mut idt[InterruptIndex::Spurious.vector()],
         spurious_handler,
     );
+    exception::gate(&mut idt[InterruptIndex::Wake.vector()], wake_handler);
     idt
 });
 
@@ -169,6 +220,12 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
 
 extern "x86-interrupt" fn error_handler(stack_frame: InterruptStackFrame) {
     logln!("ERROR:\n{stack_frame:#?}");
+    end_of_interrupt();
+}
+
+extern "x86-interrupt" fn wake_handler(_stack_frame: InterruptStackFrame) {
+    // Nothing else to do: returning from the interrupt ends the halt, and
+    // the executor then checks what woke it.
     end_of_interrupt();
 }
 

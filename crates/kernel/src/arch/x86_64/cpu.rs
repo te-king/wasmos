@@ -24,6 +24,11 @@ impl CpuId {
     pub const fn nth(index: u32) -> Self {
         CpuId(index)
     }
+
+    /// Its position among the processors the firmware lists.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
 }
 
 impl fmt::Display for CpuId {
