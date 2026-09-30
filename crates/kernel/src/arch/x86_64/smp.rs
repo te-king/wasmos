@@ -17,7 +17,7 @@ use uefi::{
 use super::{
     boot::{Ap, BootServices},
     int::{self, IpiDestination},
-    trampoline::Trampoline,
+    trampoline::{Armed, Trampoline},
 };
 use crate::timer::Ticks;
 
@@ -207,11 +207,12 @@ impl Startup {
     /// trampoline: that processor might still arrive and read its handoff,
     /// so it must not be prepared again.
     pub async fn start(self, ticks: &mut Ticks, main: fn(Ap) -> !) -> Result<(), Timeout> {
-        let Some((mut trampoline, targets)) = self.launch else {
+        let Some((trampoline, targets)) = self.launch else {
             return Ok(());
         };
+        let mut trampoline = trampoline.arm(main);
         for target in targets {
-            start_one(ticks, &mut trampoline, target, main).await?;
+            start_one(ticks, &mut trampoline, target).await?;
         }
         Ok(())
     }
@@ -220,11 +221,10 @@ impl Startup {
 /// Starts one processor with the INIT, startup, startup IPI sequence.
 async fn start_one(
     ticks: &mut Ticks,
-    trampoline: &mut Trampoline,
+    trampoline: &mut Armed,
     Target { processor, dest }: Target,
-    main: fn(Ap) -> !,
 ) -> Result<(), Timeout> {
-    trampoline.prepare(processor.id, main);
+    let trampoline = trampoline.prepare(processor.id);
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
     // started, so it is parked by the firmware, running nothing of ours.
@@ -234,7 +234,8 @@ async fn start_one(
     // Intel's sequence sends a second startup IPI in case the first is
     // missed. A processor that has already started ignores it.
     for limit in [2, START_TIMEOUT] {
-        // SAFETY: `prepare` put the trampoline in the page at `vector`.
+        // SAFETY: `trampoline` is prepared to start this processor from the
+        // page at `vector`.
         unsafe { int::send_startup(dest, trampoline.vector()) };
         if ticks.within(limit, || trampoline.arrived()).await {
             return Ok(());
