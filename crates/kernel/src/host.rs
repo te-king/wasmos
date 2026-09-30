@@ -1,11 +1,13 @@
 //! Host functions: the kernel's side of the guest ABI (see `wasmos_abi`).
 //!
-//! Bad input from a guest traps the guest (an `Err` from the host function)
-//! rather than panicking the kernel.
+//! A host function returns an `Err` in two cases. Bad input from a guest
+//! traps the guest rather than panicking the kernel. And a [`Request`]
+//! suspends the guest while the kernel does something that takes time,
+//! then resumes it (see `guest::run`).
 
-use core::iter;
+use core::{fmt, iter};
 
-use wasmi::{Caller, Engine, Error, Extern, Linker, TrapCode};
+use wasmi::{Caller, Engine, Error, Extern, Linker, TrapCode, errors::HostError};
 use wasmos_abi as abi;
 
 use crate::log;
@@ -18,7 +20,32 @@ const PIECE: usize = 256;
 pub fn linker(engine: &Engine) -> Result<Linker<()>, Error> {
     let mut linker = Linker::new(engine);
     linker.func_wrap(abi::MODULE, abi::PRINT, print)?;
+    linker.func_wrap(abi::MODULE, abi::SLEEP, sleep)?;
     Ok(linker)
+}
+
+/// Something a guest asked for that takes time. A host function returns it
+/// as its error, which suspends the guest; the kernel does the waiting, and
+/// resumes the guest with the host function's results.
+#[derive(Clone, Copy, Debug)]
+pub enum Request {
+    /// Wait for at least this many full timer periods. No results.
+    Sleep(u64),
+}
+
+impl fmt::Display for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Request::Sleep(ticks) => write!(f, "{}: sleep for {ticks} ticks", abi::SLEEP),
+        }
+    }
+}
+
+impl HostError for Request {}
+
+/// Suspends the guest for at least `ticks` full timer periods.
+fn sleep(_: Caller<'_, ()>, ticks: u64) -> Result<(), Error> {
+    Err(Error::host(Request::Sleep(ticks)))
 }
 
 /// Writes UTF-8 text from guest memory to the kernel log.

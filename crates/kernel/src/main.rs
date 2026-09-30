@@ -23,7 +23,7 @@ const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
 /// The kernel proper, once the boot sequence has started the timer.
 pub async fn kernel_main(timer: &Timer) -> Result<(), Error> {
-    let (shell, ()) = join(guest::run(WSHELL), tick_task(timer)).await;
+    let (shell, ()) = join(guest::run(WSHELL, timer), tick_task(timer)).await;
     shell
 }
 
