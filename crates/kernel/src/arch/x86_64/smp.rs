@@ -1,9 +1,10 @@
 //! Discovery and startup of the platform's processors.
 //!
-//! The processors are enumerated through UEFI's MP Services protocol, which
-//! is only available before boot services are exited. The application
-//! processors are started afterwards, with INIT and startup IPIs into the
-//! [`Trampoline`].
+//! Everything needed to start the application processors is gathered by
+//! [`prepare`] while boot services are available: the processors, which are
+//! enumerated through UEFI's MP Services protocol, their IPI destinations,
+//! and the [`Trampoline`] page they start in. [`Startup::start`] starts them
+//! once boot services are exited, with INIT and startup IPIs.
 
 use alloc::vec::Vec;
 use core::{fmt, future, iter};
@@ -18,7 +19,7 @@ use uefi::{
 use super::{
     boot::{Ap, BootServices, Clock, Heap},
     cpu::{CpuId, Local},
-    int::{self, Ipi},
+    int::{self, Ipi, IpiDestination},
     trampoline::Trampoline,
 };
 use crate::timer::{self, Ticks};
@@ -47,25 +48,42 @@ pub struct Processors {
     pub aps: Vec<Processor>,
 }
 
-/// Why processor discovery failed.
+/// The processors found at boot, and what's needed to start them.
+pub struct Startup {
+    pub processors: Processors,
+    /// The page the application processors start in and the ones to start,
+    /// or `None` if there are none.
+    launch: Option<(Trampoline, Vec<Target>)>,
+}
+
+/// An application processor to start.
+#[derive(Clone, Copy)]
+struct Target {
+    id: CpuId,
+    apic_id: u64,
+    dest: IpiDestination,
+}
+
+/// Why the application processors can't be started.
 #[derive(Debug, Error)]
-pub enum DiscoveryError {
+pub enum PrepareError {
     #[error("MP Services unavailable: {0:?}")]
     Firmware(#[from] uefi::Error),
     #[error("firmware reported {0} bootstrap processors")]
     BspCount(usize),
-}
-
-/// Why the application processors couldn't all be started.
-#[derive(Debug, Error)]
-pub enum StartError {
-    #[error("no page below 1 MiB for the trampoline: {0:?}")]
-    Trampoline(uefi::Error),
     /// The local APIC can't address the processor in its current mode.
     #[error("cpu {id}: apic {apic_id} can't be addressed")]
     Unaddressable { id: CpuId, apic_id: u64 },
-    #[error("cpu {id}: apic {apic_id} didn't start")]
-    Timeout { id: CpuId, apic_id: u64 },
+    #[error("no page below 1 MiB for the trampoline: {0:?}")]
+    Trampoline(uefi::Error),
+}
+
+/// An application processor didn't enter the kernel in time.
+#[derive(Debug, Error)]
+#[error("cpu {id}: apic {apic_id} didn't start")]
+pub struct Timeout {
+    id: CpuId,
+    apic_id: u64,
 }
 
 impl Processors {
@@ -126,11 +144,32 @@ impl fmt::Display for Processors {
     }
 }
 
+/// Finds the processors, and reserves the trampoline if there are
+/// application processors to start.
+pub fn prepare(firmware: &BootServices) -> Result<Startup, PrepareError> {
+    let processors = discover(firmware)?;
+    let targets = processors
+        .startable()
+        .map(|(id, ap)| {
+            let apic_id = ap.apic_id;
+            int::ipi_destination(apic_id)
+                .map(|dest| Target { id, apic_id, dest })
+                .ok_or(PrepareError::Unaddressable { id, apic_id })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let launch = (!targets.is_empty())
+        .then(|| Trampoline::reserve(firmware))
+        .transpose()
+        .map_err(PrepareError::Trampoline)?
+        .map(|trampoline| (trampoline, targets));
+    Ok(Startup { processors, launch })
+}
+
 /// Enumerates the processors through UEFI's MP Services protocol.
 ///
 /// Needs boot services, hence the token. The protocol is closed again before
 /// this returns.
-pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
+fn discover(_: &BootServices) -> Result<Processors, PrepareError> {
     let handle = boot::get_handle_for_protocol::<MpServices>()?;
     let mp = boot::open_protocol_exclusive::<MpServices>(handle)?;
 
@@ -141,7 +180,7 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
 
     let (bsps, aps): (Vec<_>, Vec<_>) = infos.iter().partition(|info| info.is_bsp());
     let [bsp] = bsps[..] else {
-        return Err(DiscoveryError::BspCount(bsps.len()));
+        return Err(PrepareError::BspCount(bsps.len()));
     };
 
     Ok(Processors {
@@ -150,29 +189,29 @@ pub fn discover(_: &BootServices) -> Result<Processors, DiscoveryError> {
     })
 }
 
-/// Starts every enabled application processor, one at a time, each running
-/// `main` with its first boot stage, which carries its id.
-///
-/// Needs the clock, since the delays between IPIs are timed in ticks.
-pub async fn start(
-    clock: &mut Clock,
-    processors: &Processors,
-    trampoline: Trampoline,
-    main: fn(Heap<Ap>) -> !,
-) -> Result<(), StartError> {
-    let local = clock.local();
-    // Each start hands the trampoline and the tick stream on to the next.
-    stream::iter(processors.startable())
-        .map(Ok)
-        .try_fold(
-            (trampoline, timer::ticks(clock)),
-            |(trampoline, mut ticks), (id, ap)| async move {
-                let trampoline = start_one(local, &mut ticks, trampoline, id, ap, main).await?;
-                Ok((trampoline, ticks))
-            },
-        )
-        .await
-        .map(drop)
+impl Startup {
+    /// Starts the application processors, one at a time, each running
+    /// `main` with its first boot stage, which carries its id.
+    ///
+    /// Needs the clock, since the delays between IPIs are timed in ticks.
+    pub async fn start(self, clock: &mut Clock, main: fn(Heap<Ap>) -> !) -> Result<(), Timeout> {
+        let Some((trampoline, targets)) = self.launch else {
+            return Ok(());
+        };
+        let local = clock.local();
+        // Each start hands the trampoline and the tick stream on to the next.
+        stream::iter(targets)
+            .map(Ok)
+            .try_fold(
+                (trampoline, timer::ticks(clock)),
+                |(trampoline, mut ticks), target| async move {
+                    let trampoline = start_one(local, &mut ticks, trampoline, target, main).await?;
+                    Ok((trampoline, ticks))
+                },
+            )
+            .await
+            .map(drop)
+    }
 }
 
 /// Starts one processor with the INIT, startup, startup IPI sequence, and
@@ -181,12 +220,9 @@ async fn start_one(
     local: Local,
     ticks: &mut Ticks<'_>,
     trampoline: Trampoline,
-    id: CpuId,
-    ap: &Processor,
+    Target { id, apic_id, dest }: Target,
     main: fn(Heap<Ap>) -> !,
-) -> Result<Trampoline, StartError> {
-    let apic_id = ap.apic_id;
-    let dest = int::ipi_destination(apic_id).ok_or(StartError::Unaddressable { id, apic_id })?;
+) -> Result<Trampoline, Timeout> {
     let launch = trampoline.launch(id, main);
 
     // SAFETY: `dest` is an application processor that the kernel hasn't
@@ -203,7 +239,7 @@ async fn start_one(
             break;
         }
     }
-    launch.land().ok_or(StartError::Timeout { id, apic_id })
+    launch.land().ok_or(Timeout { id, apic_id })
 }
 
 /// Waits for at least `periods` full timer periods.

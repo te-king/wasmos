@@ -54,32 +54,22 @@ fn main() -> Status {
     // SAFETY: This is the UEFI entry point, and nothing has used boot
     // services yet.
     let firmware = unsafe { boot::BootServices::start() };
-    let processors = smp::discover(&firmware);
-    let trampoline = trampoline::Trampoline::reserve(&firmware);
+    let startup = smp::prepare(&firmware);
     firmware
         .exit()
-        .on_kernel_stack(move |heap| bsp_main(heap, processors, trampoline))
+        .on_kernel_stack(move |heap| bsp_main(heap, startup))
 }
 
 /// Where the bootstrap processor goes once it has left the firmware.
-fn bsp_main(
-    heap: boot::Heap<boot::Bsp>,
-    processors: Result<smp::Processors, smp::DiscoveryError>,
-    trampoline: uefi::Result<trampoline::Trampoline>,
-) -> ! {
+fn bsp_main(heap: boot::Heap<boot::Bsp>, startup: Result<smp::Startup, smp::PrepareError>) -> ! {
     let mut clock = heap.init_cpu().start_clock();
 
-    match &processors {
-        Ok(processors) => log!("{processors}"),
-        Err(err) => logln!("smp: {err}"),
+    if let Ok(startup) = &startup {
+        log!("{}", startup.processors);
     }
 
     finish(Executor::new().block_on(async {
-        // Without discovery, the kernel carries on with this processor.
-        if let Ok(processors) = &processors {
-            let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
-            smp::start(&mut clock, processors, trampoline, ap_main).await?;
-        }
+        startup?.start(&mut clock, ap_main).await?;
         kernel_main(&mut clock).await?;
         Ok::<_, KernelError>(())
     }))
@@ -88,8 +78,11 @@ fn bsp_main(
 /// Why the kernel failed.
 #[derive(Debug, Error)]
 enum KernelError {
+    /// The application processors couldn't be prepared for starting.
+    #[error("smp: {0}")]
+    Prepare(#[from] smp::PrepareError),
     #[error(transparent)]
-    Start(#[from] smp::StartError),
+    Start(#[from] smp::Timeout),
     /// A guest failed, trapping or failing to load.
     #[error("guest: {0}")]
     Guest(#[from] wasmi::Error),
