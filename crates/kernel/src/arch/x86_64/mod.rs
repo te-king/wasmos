@@ -51,13 +51,9 @@ fn main() -> Status {
     let firmware = unsafe { boot::BootServices::start() };
     let processors = smp::discover(&firmware);
     let trampoline = trampoline::Trampoline::reserve(&firmware);
-    let clock = firmware
-        .exit()
-        .init_cpu(0)
-        .enable_interrupts()
-        .start_clock();
+    let (bsp, mut ticks) = firmware.exit().online();
 
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+    logln!("cpu {}: online", bsp.id);
     match &processors {
         Ok(processors) => {
             logln!("smp: {}", processors);
@@ -73,17 +69,17 @@ fn main() -> Status {
         // Without discovery, the kernel carries on with this processor.
         if let Ok(processors) = &processors {
             let trampoline = trampoline.map_err(smp::StartError::Trampoline)?;
-            smp::start(&clock, processors, trampoline, ap_main).await?;
+            smp::start(&mut ticks, processors, trampoline, ap_main).await?;
         }
-        kernel_main().await?;
+        kernel_main(ticks).await?;
         Ok::<_, Box<dyn Error>>(())
     }))
 }
 
 /// Where each application processor goes once it has entered the kernel.
-fn ap_main(heap: boot::Heap, id: u32) -> ! {
-    let _interrupts = heap.init_cpu(id).enable_interrupts();
-    cpu::with(|cpu| logln!("cpu {}: online", cpu.id));
+fn ap_main(ap: boot::Ap) -> ! {
+    let local = ap.online();
+    logln!("cpu {}: online", local.id);
     // Its timer is stopped and nothing sends it IPIs yet, so this sleeps.
     loop {
         hlt();

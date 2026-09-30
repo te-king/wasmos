@@ -7,6 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use futures_util::{StreamExt, future::join};
+use timer::Ticks;
 use wasmi::{Engine, Error, Module, Store};
 
 mod arch;
@@ -17,9 +18,10 @@ mod timer;
 
 const WSHELL: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_WSHELL"));
 
-pub async fn kernel_main() -> Result<(), Error> {
+/// The kernel proper, once every processor is up. `ticks` is the clock.
+pub async fn kernel_main(ticks: Ticks) -> Result<(), Error> {
     run_guest(WSHELL)?;
-    join(example_task(), tick_task()).await;
+    join(example_task(), tick_task(ticks)).await;
     Ok(())
 }
 
@@ -43,8 +45,7 @@ async fn example_task() {
     logln!("async number: {}", number);
 }
 
-async fn tick_task() {
-    let ticks = timer::ticks().expect("nothing else is using the timer");
+async fn tick_task(ticks: Ticks) {
     let seen: Vec<u64> = ticks.take(3).collect().await;
     logln!("timer: ticks {:?}", seen);
 }

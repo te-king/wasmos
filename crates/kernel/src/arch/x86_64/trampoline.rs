@@ -31,7 +31,7 @@ use x86_64::{
 };
 
 use super::{
-    boot::{BootServices, Heap},
+    boot::{Ap, BootServices},
     mem::PAGE_SIZE,
 };
 
@@ -78,7 +78,7 @@ struct Handoff {
 
     // Read by `enter`.
     id: u32,
-    main: fn(Heap, u32) -> !,
+    main: fn(Ap) -> !,
     kernel_gdt: DescriptorTablePointer,
     code_selector: SegmentSelector,
     data_selector: SegmentSelector,
@@ -207,7 +207,7 @@ impl Trampoline {
     /// before the first start, or once the last one has [`arrived`].
     ///
     /// [`arrived`]: Trampoline::arrived
-    pub fn prepare(&mut self, id: u32, main: fn(Heap, u32) -> !) {
+    pub fn prepare(&mut self, id: u32, main: fn(Ap) -> !) {
         let page = self.address();
         let far = |label: *const u8, selector| FarPointer {
             offset: (page + offset_of_label(label) as u64) as u32,
@@ -306,7 +306,7 @@ unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
 
     // SAFETY: The handoff is still valid, and `arrived` is atomic.
     unsafe { &(*handoff).arrived }.store(true, Ordering::Release);
-    // SAFETY: This processor has just entered the kernel, and only gets
-    // here once.
-    main(unsafe { Heap::application_processor() }, id)
+    // SAFETY: This is processor `id`, which has just entered the kernel and
+    // only gets here once.
+    main(unsafe { Ap::arrived(id) })
 }
