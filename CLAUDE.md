@@ -63,11 +63,12 @@ firmware.exit(|heap| bsp_main(heap, startup)); // exit boot services, mask legac
 let mut clock = heap
     .init_cpu()           // own GDT + TSS, per-CPU block, then IDT, LAPIC (timer stopped), sti; logs "online"
     .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
-finish(Executor::new().block_on(async {
-    startup?.start(&mut clock, ap_main).await?; // times IPIs in ticks
-    kernel_main(&mut clock).await?;
+let local = clock.local();
+finish(Executor::new().block_on(timer::serve(&mut clock, async |timer| {
+    startup?.start(local, timer, ap_main).await?; // times IPIs in ticks
+    kernel_main(timer).await?;
     ..
-}))
+})))
 ```
 
 - Anything that needs a stage should take its token (as `smp::prepare` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
@@ -84,7 +85,7 @@ finish(Executor::new().block_on(async {
 - `smp::prepare` gathers everything before `exit()`: the processors, each startable one's IPI destination, and the trampoline page, which is only reserved if there are application processors to start. Any failure there fails the boot, so starting (`Startup::start`, which consumes the `Startup`) can only fail with `Timeout`.
 - A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap)`, whose `Heap<Ap>` carries the id.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
-- `Startup::start` is async: a loop over the processors to start, one at a time, sharing one tick stream. `Armed::launch` consumes the trampoline and writes the next processor's part of the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
+- `Startup::start` is async: a loop over the processors to start, one at a time, timing each on the `Timer`. `Armed::launch` consumes the trampoline and writes the next processor's part of the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
 - The handoff has two parts: `shared`, written once by `Trampoline::arm(main)` (the trampoline's GDT and far pointers, the BSP's control registers, `enter` and `main`), and `next`, written for each processor by `Armed::launch(id)` (its stack, `id` and `arrived`). `Launch::land` gives back the `Armed` trampoline, so the next launch only writes `next`.
 - Both parts are built as plain data (`Shared::new`, `Next::new`), the shared one from `ControlRegisters::read().for_startup()`. The trampoline's selectors are computed from the positions its GDT is filled in by.
 
@@ -101,7 +102,7 @@ finish(Executor::new().block_on(async {
 ### Interrupts and async
 - Handlers (`int.rs`) do the minimum: record the event, wake a waker, EOI. The spurious handler must not EOI.
 - Anything a handler wakes must be interrupt-safe (lock-free). Logic belongs in async tasks.
-- `timer::ticks(&mut Clock)` is a `futures::Stream` of tick counts (about 100 Hz under QEMU, not calibrated). The `Clock` token (`arch::Clock`, made only by `start_clock`) proves ticks are coming, and the stream borrows it mutably, so there is only ever one consumer, checked at compile time (the waker slot holds one task). `kernel_main` takes `&mut Clock` for the same reason. Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too. Fan-out to many waiters belongs in a task that owns the stream.
+- Ticks are about 100 Hz under QEMU, not calibrated. `timer::serve(&mut clock, async |timer| ...)` runs the rest of the kernel with a `&Timer` (`sleep(periods)`, `next_tick()`, `within(periods, done)`), while a service future alongside it owns the ticks and wakes each sleeper whose deadline has passed. The `Clock` token (`arch::Clock`, made only by `start_clock`) proves ticks are coming, and `serve` borrows it mutably, so the service is the only consumer of ticks, checked at compile time (the waker slot holds one task). A `Timer` only exists inside `serve`, so a sleep on it always ends. Its sleepers are behind an `IrqMutex`, so it's `Sync`. `kernel_main` and `Startup::start` take `&Timer`. Every timer interrupt counts as a tick, so only the BSP runs its LAPIC timer (`start_clock`). `install_local_apic` stops the timer that x2apic's `enable` starts, which it does on application processors too.
 - `Executor::block_on` runs one root future and halts the processor (`enable_and_hlt`) while it's pending. It takes `&mut self`, so it can't be re-entered on the same executor, whose wake-ups a nested call could swallow; each processor can have its own executor. There is no task spawning: concurrency comes from composing futures (`join`, `select`, `FuturesUnordered`).
 - Its waker only sets the executor's flag, a leaked `&'static AtomicBool` (a waker can outlive any one `block_on`: the timer keeps the last one), so it never allocates or frees, even when woken from an interrupt handler.
 - Data that interrupt handlers can reach and that more than one processor shares goes behind a `sync::IrqMutex`: a spin lock that disables this processor's interrupts while held, so a handler can never spin on a lock its own processor holds. The allocator (`mem.rs`, talc's lock) and the log use it, so handlers may allocate, free and log. Per-CPU data keeps `RefCell` behind `Local::with` instead: there, contention can only be re-entry on the same processor, which a `RefCell` reports and a spin lock would hang on.
