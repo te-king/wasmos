@@ -4,8 +4,14 @@
 //! A startup IPI starts a processor in 16-bit real mode, at the start of a
 //! page below 1 MiB. The trampoline takes it through protected mode into
 //! long mode, with the bootstrap processor's page tables, then calls
-//! [`enter`] on a fresh stack. Everything it needs is in a [`Handoff`] that
-//! the bootstrap processor writes into the same page before each start.
+//! [`enter`] on a fresh stack. Everything it needs is in a [`Handoff`] in
+//! the same page, which the bootstrap processor writes in two parts: what
+//! every processor shares, once, then what is the next one's own before
+//! each start:
+//!
+//! ```text
+//! Trampoline --arm(main)--> Armed --launch(id)--> Launch --land()--> Armed
+//! ```
 
 use core::{
     arch::global_asm,
@@ -67,10 +73,17 @@ struct FarPointer {
     selector: u16,
 }
 
-/// Everything a starting processor needs, written by the bootstrap
-/// processor before each start.
+/// Everything a starting processor needs.
 #[repr(C)]
 struct Handoff {
+    /// The same for every processor. Written once, by `arm`.
+    shared: Shared,
+    /// The processor being started. Written before each start, by `launch`.
+    next: Next,
+}
+
+#[repr(C)]
+struct Shared {
     // Read by the trampoline code.
     /// A copy of [`GDT`], which real mode can only reach within the page.
     gdt: [u64; 4],
@@ -79,13 +92,20 @@ struct Handoff {
     protected_mode: FarPointer,
     long_mode: FarPointer,
     registers: ControlRegisters,
-    stack_top: u64,
     enter: unsafe extern "sysv64" fn(*const Handoff) -> !,
 
     // Read by `enter`.
-    id: CpuId,
     main: fn(Heap<Ap>) -> !,
-    /// Set once the processor no longer needs this handoff.
+}
+
+#[repr(C)]
+struct Next {
+    /// Read by the trampoline code.
+    stack_top: u64,
+
+    // Read by `enter`.
+    id: CpuId,
+    /// Set once the processor no longer needs the handoff.
     arrived: AtomicBool,
 }
 
@@ -141,17 +161,17 @@ global_asm!(
     "call [rbx + {enter}]",
     "ud2",
     "wasmos_trampoline_end:",
-    gdt_pointer = const HANDOFF + offset_of!(Handoff, gdt_pointer),
-    protected_mode = const HANDOFF + offset_of!(Handoff, protected_mode),
+    gdt_pointer = const HANDOFF + offset_of!(Handoff, shared.gdt_pointer),
+    protected_mode = const HANDOFF + offset_of!(Handoff, shared.protected_mode),
     data = const selector(DATA),
-    cr4 = const HANDOFF + offset_of!(Handoff, registers.cr4),
-    cr3 = const HANDOFF + offset_of!(Handoff, registers.cr3),
-    efer = const HANDOFF + offset_of!(Handoff, registers.efer),
-    cr0 = const HANDOFF + offset_of!(Handoff, registers.cr0),
-    long_mode = const HANDOFF + offset_of!(Handoff, long_mode),
-    stack_top = const HANDOFF + offset_of!(Handoff, stack_top),
+    cr4 = const HANDOFF + offset_of!(Handoff, shared.registers.cr4),
+    cr3 = const HANDOFF + offset_of!(Handoff, shared.registers.cr3),
+    efer = const HANDOFF + offset_of!(Handoff, shared.registers.efer),
+    cr0 = const HANDOFF + offset_of!(Handoff, shared.registers.cr0),
+    long_mode = const HANDOFF + offset_of!(Handoff, shared.long_mode),
+    stack_top = const HANDOFF + offset_of!(Handoff, next.stack_top),
     handoff = const HANDOFF,
-    enter = const HANDOFF + offset_of!(Handoff, enter),
+    enter = const HANDOFF + offset_of!(Handoff, shared.enter),
 );
 
 unsafe extern "C" {
@@ -189,8 +209,8 @@ impl Trampoline {
         let start = &raw const wasmos_trampoline_start;
         let len = offset_of_label(&raw const wasmos_trampoline_end);
         assert!(len <= HANDOFF, "trampoline code overlaps its handoff");
-        // Zeroed, so the page holds nothing but the code until a launch
-        // writes its handoff.
+        // Zeroed, so the page holds nothing but the code until `arm` and
+        // `launch` write its handoff.
         // SAFETY: The page was just allocated, and the code is `len` bytes
         // of the kernel image, which fit in front of the handoff.
         unsafe {
@@ -200,24 +220,14 @@ impl Trampoline {
         Ok(Trampoline { page })
     }
 
-    /// Prepares the trampoline to start processor `id`, which will run
-    /// `main` on a new stack with this processor's paging and segments.
-    ///
-    /// The launch takes the trampoline, and only gives it back once the
-    /// processor has let go of it ([`Launch::land`]), so nothing can rewrite
-    /// the handoff while a processor might still read it.
-    pub fn launch(self, id: CpuId, main: fn(Heap<Ap>) -> !) -> Launch {
-        let handoff = Handoff::new(
-            self.address(),
-            ControlRegisters::read().for_startup(),
-            stack::leak::<{ stack::KERNEL_SIZE }>(),
-            id,
-            main,
-        );
+    /// Writes the part of the handoff every processor shares: they all run
+    /// `main` with this processor's paging.
+    pub fn arm(self, main: fn(Heap<Ap>) -> !) -> Armed {
+        let shared = Shared::new(self.address(), ControlRegisters::read().for_startup(), main);
         // SAFETY: The handoff fits in the page (checked at compile time), and
-        // owning the trampoline means no processor is reading the old one.
-        unsafe { self.handoff().write(handoff) };
-        Launch(self)
+        // no processor has been started from it yet.
+        unsafe { (&raw mut (*self.handoff()).shared).write(shared) };
+        Armed(self)
     }
 
     fn address(&self) -> u64 {
@@ -229,29 +239,56 @@ impl Trampoline {
     }
 }
 
+/// A trampoline with the part of its handoff that every processor shares.
+pub struct Armed(Trampoline);
+
+impl Armed {
+    /// Prepares the trampoline to start processor `id` on a new stack.
+    ///
+    /// The launch takes the trampoline, and only gives it back once the
+    /// processor has let go of it ([`Launch::land`]), so nothing can rewrite
+    /// the handoff while a processor might still read it.
+    pub fn launch(self, id: CpuId) -> Launch {
+        let next = Next::new(stack::leak::<{ stack::KERNEL_SIZE }>(), id);
+        // SAFETY: The handoff fits in the page (checked at compile time), and
+        // owning the trampoline means no processor is reading the old one.
+        unsafe { (&raw mut (*self.0.handoff()).next).write(next) };
+        Launch(self)
+    }
+}
+
 /// A trampoline prepared to start one processor, which may be running it.
-pub struct Launch(Trampoline);
+pub struct Launch(Armed);
 
 impl Launch {
     /// The startup IPI vector that starts the processor in the trampoline.
     pub fn vector(&self) -> u8 {
-        (self.0.address() / PAGE_SIZE as u64) as u8
+        (self.trampoline().address() / PAGE_SIZE as u64) as u8
     }
 
     /// Whether the processor has entered the kernel and let go of the
     /// trampoline.
     pub fn arrived(&self) -> bool {
-        // SAFETY: `launch` wrote the handoff, so `arrived` holds a valid
-        // `bool`, and since the processor could be running, it is only
-        // accessed atomically.
-        unsafe { (*self.0.handoff()).arrived.load(Ordering::Acquire) }
+        // SAFETY: `launch` wrote the next processor's part of the handoff,
+        // so `arrived` holds a valid `bool`, and since the processor could
+        // be running, it is only accessed atomically.
+        unsafe {
+            (*self.trampoline().handoff())
+                .next
+                .arrived
+                .load(Ordering::Acquire)
+        }
     }
 
     /// The trampoline back, for the next launch, if the processor has let
     /// go of it. A processor that hasn't might still turn up and read its
     /// handoff, so its trampoline can never be used again.
-    pub fn land(self) -> Option<Trampoline> {
+    pub fn land(self) -> Option<Armed> {
         self.arrived().then_some(self.0)
+    }
+
+    fn trampoline(&self) -> &Trampoline {
+        &(self.0).0
     }
 }
 
@@ -293,33 +330,35 @@ impl ControlRegisters {
     }
 }
 
-impl Handoff {
-    /// The handoff for the trampoline page at `page` to start processor
-    /// `id` with `registers`, running `main` on `stack`.
-    fn new(
-        page: u64,
-        registers: ControlRegisters,
-        stack: stack::Top,
-        id: CpuId,
-        main: fn(Heap<Ap>) -> !,
-    ) -> Self {
+impl Shared {
+    /// The shared part of the handoff for the trampoline page at `page`,
+    /// starting processors with `registers` and running `main`.
+    fn new(page: u64, registers: ControlRegisters, main: fn(Heap<Ap>) -> !) -> Self {
         let far = |label: *const u8, index| FarPointer {
             offset: (page + offset_of_label(label) as u64) as u32,
             selector: selector(index),
         };
-        Handoff {
+        Shared {
             gdt: GDT,
             gdt_pointer: DescriptorTablePointer {
                 limit: (size_of_val(&GDT) - 1) as u16,
-                base: VirtAddr::new(page + (HANDOFF + offset_of!(Handoff, gdt)) as u64),
+                base: VirtAddr::new(page + (HANDOFF + offset_of!(Handoff, shared.gdt)) as u64),
             },
             protected_mode: far(&raw const wasmos_trampoline_protected, CODE32),
             long_mode: far(&raw const wasmos_trampoline_long, CODE64),
             registers,
-            stack_top: stack.into_addr().as_u64(),
             enter,
-            id,
             main,
+        }
+    }
+}
+
+impl Next {
+    /// The part of the handoff for starting processor `id` on `stack`.
+    fn new(stack: stack::Top, id: CpuId) -> Self {
+        Next {
+            stack_top: stack.into_addr().as_u64(),
+            id,
             arrived: AtomicBool::new(false),
         }
     }
@@ -332,8 +371,9 @@ impl Handoff {
 unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     // Everything is copied out before signalling arrival, since the
     // bootstrap processor can rewrite the handoff as soon as it sees it.
-    // SAFETY: The trampoline passes the handoff that `launch` wrote.
-    let (id, main) = unsafe { ((*handoff).id, (*handoff).main) };
+    // SAFETY: The trampoline passes the handoff that `arm` and `launch`
+    // wrote.
+    let (id, main) = unsafe { ((*handoff).next.id, (*handoff).shared.main) };
 
     // The descriptor table in use is the handoff's, so switch to one that
     // stays put until this processor gets its own in `init_cpu`.
@@ -342,7 +382,7 @@ unsafe extern "sysv64" fn enter(handoff: *const Handoff) -> ! {
     unsafe { gdt::load_boot() };
 
     // SAFETY: The handoff is still valid, and `arrived` is atomic.
-    unsafe { &(*handoff).arrived }.store(true, Ordering::Release);
+    unsafe { &(*handoff).next.arrived }.store(true, Ordering::Release);
     // SAFETY: This processor has just entered the kernel, only gets here
     // once, and `id` is the one `launch` was given for it.
     main(unsafe { Heap::application_processor(id) })

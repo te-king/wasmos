@@ -56,24 +56,23 @@ The order is load-bearing, so it is enforced with typestates. Each stage is a to
 
 ```rust
 let firmware = unsafe { boot::BootServices::start() };
-let processors = smp::discover(&firmware);   // needs boot services (UEFI MP Services)
-let trampoline = Trampoline::reserve(&firmware); // a page below 1 MiB, also needs boot services
+let startup = smp::prepare(&firmware); // needs boot services: MP Services, and a page below 1 MiB
 firmware
     .exit()               // exit boot services, mask legacy PIC, serial log, memory map -> allocator
-    .on_kernel_stack(|heap| bsp_main(heap, processors, trampoline)) // leave the firmware's stack for good
+    .on_kernel_stack(|heap| bsp_main(heap, startup)) // leave the firmware's stack for good
 // in bsp_main:
 let mut clock = heap
     .init_cpu()           // own GDT + TSS, per-CPU block, then IDT, LAPIC (timer stopped), sti; logs "online"
     .start_clock();       // only on Interrupts<Bsp>: its LAPIC timer drives `timer`
 finish(Executor::new().block_on(async {
-    smp::start(&mut clock, processors, trampoline, ap_main).await?; // times IPIs in ticks
+    startup?.start(&mut clock, ap_main).await?; // times IPIs in ticks
     kernel_main(&mut clock).await?;
     ..
 }))
 ```
 
-- Anything that needs a stage should take its token (as `smp::discover` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
-- `finish` turns the `Result` of starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
+- Anything that needs a stage should take its token (as `smp::prepare` takes `&BootServices`) rather than rely on call order. The `unsafe` steps live inside the transitions, each with its own `SAFETY` comment.
+- `finish` turns the `Result` of preparing and starting the processors and running `kernel_main` into the QEMU exit code. It's the only place the kernel decides success or failure. It never returns: after `exit()` there is no firmware to return to, so outside QEMU it powers off (runtime `ResetSystem`) on success and halts on failure. The panic handler halts too.
 - Before `exit()`, allocation is served only by a 1 MiB static early heap (`mem.rs`, talc `Claim` source). A panic there is silent, because the serial port isn't up yet.
 - Reaching a CPU's block before `cpu::init` on that CPU is undefined behaviour, so safe code can only do it with the `Local` that `init` returns (see Per-CPU data).
 - The BSP leaves the firmware's stack straight after `exit()` (`Heap::on_kernel_stack`). That stack is 128 KiB under OVMF with no guard page, and the allocator claims the conventional memory right below it. Running a guest takes about 340 KiB of stack, so staying on it silently corrupted the heap.
@@ -83,10 +82,12 @@ finish(Executor::new().block_on(async {
 ### Application processors (`smp.rs`, `trampoline.rs`)
 - The long-term goal is for every processor to join an async executor on startup. For now each one sets up its per-CPU block and interrupts in `ap_main`, logs `cpu N: online` and halts. Nothing wakes it yet: its timer is stopped and nothing sends IPIs.
 - UEFI MP Services only runs code on application processors until boot services are exited, after which the firmware parks them again. So it is only used for discovery. The kernel starts them itself with INIT and startup IPIs.
+- `smp::prepare` gathers everything before `exit()`: the processors, each startable one's IPI destination, and the trampoline page, which is only reserved if there are application processors to start. Any failure there fails the boot, so starting (`Startup::start`, which consumes the `Startup`) can only fail with `Timeout`.
 - A startup IPI starts a processor in real mode at a page below 1 MiB. The trampoline code (`global_asm!`) is copied into that page and takes the processor through protected mode into long mode. It uses the BSP's CR0, CR3, CR4 and EFER (minus PCIDE and LMA, which can't be set yet), then calls `trampoline::enter` on a fresh kernel stack. That switches to the kernel's boot GDT (`gdt::load_boot`), so the processor stops depending on the handoff before it signals arrival, and calls `ap_main(heap)`, whose `Heap<Ap>` carries the id.
 - The trampoline code only addresses memory relative to its page. Its data is a `repr(C)` `Handoff` at a fixed offset in the same page, whose field offsets the assembly gets from `offset_of!` `const` operands.
-- `smp::start` is async: a `try_fold` over the enabled processors that hands the trampoline and the tick stream from one start to the next. `Trampoline::launch` consumes the trampoline and writes the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
-- The handoff is built as plain data (`Handoff::new`) from `ControlRegisters::read().for_startup()`. The trampoline's selectors are computed from the positions its GDT is filled in by.
+- `Startup::start` is async: a `try_fold` over the processors to start that hands the trampoline and the tick stream from one start to the next. `Trampoline::launch` consumes the trampoline and writes the handoff; the processor signals `arrived` once it no longer needs it, and only then does `Launch::land` give the trampoline back. A processor that doesn't arrive within about a second fails the boot, and its launch never gives the trampoline back, since the processor might still turn up and read its handoff.
+- The handoff has two parts: `shared`, written once by `Trampoline::arm(main)` (the trampoline's GDT and far pointers, the BSP's control registers, `enter` and `main`), and `next`, written for each processor by `Armed::launch(id)` (its stack, `id` and `arrived`). `Launch::land` gives back the `Armed` trampoline, so the next launch only writes `next`.
+- Both parts are built as plain data (`Shared::new`, `Next::new`), the shared one from `ControlRegisters::read().for_startup()`. The trampoline's selectors are computed from the positions its GDT is filled in by.
 
 ### Per-CPU data (`cpu.rs`)
 - Each CPU's `Cpu` block is reached through its GS base (`gs:[0]` holds a self-pointer).
